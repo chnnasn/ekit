@@ -6,4 +6,8 @@ out/
 __pycache__/
 agents.md
 
-
+# Boids demo outputs
+frames*/
+png/
+*.ppm
+*.gif

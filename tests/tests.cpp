@@ -14,22 +14,23 @@
 struct Position {
     float x = 0.f;
     float y = 0.f;
+    EKIT_COMPONENT(Position);
 };
-EKIT_COMPONENT(Position);
 
 struct Velocity {
     float vx = 0.f;
     float vy = 0.f;
+    EKIT_COMPONENT(Velocity);
 };
-EKIT_COMPONENT(Velocity);
 
 struct Health {
     int hp = 100;
+    EKIT_COMPONENT(Health);
 };
-EKIT_COMPONENT(Health);
 
-struct Tag {};
-EKIT_COMPONENT(Tag);
+struct Tag {
+    EKIT_COMPONENT(Tag);
+};
 
 struct NotAComponent {}; // deliberately NOT declared with EKIT_COMPONENT
 
@@ -617,6 +618,7 @@ TEST(manual_component_registration) {
 int main() {
     return testfw::RunAll();
 }
+
 
 
 

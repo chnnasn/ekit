@@ -3,6 +3,9 @@ project(ekit VERSION 0.1.0 LANGUAGES CXX)
 
 option(EKIT_BUILD_TESTS "Build the ekit test suite" ON)
 option(EKIT_BUILD_EXAMPLES "Build the ekit examples" ON)
+option(EKIT_BUILD_BOIDS "Build the boids case study" ON)
+option(EKIT_BUILD_BOIDS_LIVE "Build the boids GLFW live viewer (needs local GLFW)" ON)
+set(EKIT_GLFW_ROOT "" CACHE PATH "Path to a local GLFW checkout (NOT part of this repo)")
 
 # ---------------------------------------------------------------------------
 # Header-only library
@@ -26,6 +29,13 @@ target_link_libraries(ekit INTERFACE Threads::Threads)
 if (EKIT_BUILD_EXAMPLES)
     add_executable(ekit_basic examples/basic.cpp)
     target_link_libraries(ekit_basic PRIVATE ekit)
+endif()
+
+# ---------------------------------------------------------------------------
+# Boids case study
+# ---------------------------------------------------------------------------
+if (EKIT_BUILD_BOIDS)
+    add_subdirectory(examples/boids)
 endif()
 
 # ---------------------------------------------------------------------------

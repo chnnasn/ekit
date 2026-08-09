@@ -23,9 +23,16 @@ namespace ekit {
 // Component declaration
 // ---------------------------------------------------------------------------
 
-// Trait that marks a type as an ekit component. Specialized by EKIT_COMPONENT.
-template<typename T>
+// Trait that marks a type as an ekit component. Set by the EKIT_COMPONENT(T)
+// macro (which injects an IsEkitComponent member), or by an explicit
+// specialization of IsComponent<T> (e.g. inside namespace ekit for foreign
+// types).
+template<typename T, typename = void>
 struct IsComponent : std::false_type {};
+
+// True when the type carries the marker injected by EKIT_COMPONENT(T).
+template<typename T>
+struct IsComponent<T, std::void_t<typename T::IsEkitComponent>> : std::true_type {};
 
 namespace detail {
 
@@ -56,19 +63,27 @@ constexpr const char* ComponentNameOf() noexcept {
 template<typename T>
 inline ComponentTypeId ComponentTypeIdOf = kInvalidComponentTypeId;
 
-// Declares T as an ekit component. Place after the struct definition, at
-// namespace scope:
+// Declares T as an ekit component. Place INSIDE the struct body:
 //
-//   struct Position { float x = 0.f, y = 0.f; };
-//   EKIT_COMPONENT(Position);
+//   struct Position {
+//       float x = 0.f;
+//       float y = 0.f;
+//       EKIT_COMPONENT(Position);
+//   };
 //
-// This produces clear, readable compile errors when T is used without being
-// declared (instead of a template error storm).
+// The macro only injects a marker member and a name accessor, so the struct
+// stays a plain POD. Because it lives inside the class, it works in any
+// namespace (no explicit template specialization required).
+//
+// Alternative for types you cannot modify: specialize ekit::IsComponent<T>
+// inside namespace ekit, e.g.
+//   namespace ekit { template<> struct IsComponent<::my_ns::Foo> : std::true_type {}; }
+//
+// Undeclared types produce clear, readable compile errors instead of a
+// template error storm.
 #define EKIT_COMPONENT(Type)                                                                          \
-    template<> struct ::ekit::IsComponent<Type> : std::true_type {};                                 \
-    template<> struct ::ekit::detail::ComponentNameImpl<Type, void> {                                \
-        static constexpr const char* Get() noexcept { return #Type; }                                \
-    }
+    using IsEkitComponent = void;                                                                     \
+    static constexpr const char* GetComponentName() noexcept { return #Type; }
 
 // ---------------------------------------------------------------------------
 // Component storage
@@ -214,4 +229,5 @@ private:
 };
 
 } // namespace ekit
+
 

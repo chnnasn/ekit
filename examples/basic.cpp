@@ -3,14 +3,22 @@
 
 #include <cstdio>
 
-struct Position { float x = 0.f, y = 0.f; };
-EKIT_COMPONENT(Position);
+struct Position {
+    float x = 0.f;
+    float y = 0.f;
+    EKIT_COMPONENT(Position);
+};
 
-struct Velocity { float vx = 0.f, vy = 0.f; };
-EKIT_COMPONENT(Velocity);
+struct Velocity {
+    float vx = 0.f;
+    float vy = 0.f;
+    EKIT_COMPONENT(Velocity);
+};
 
-struct Health { int hp = 100; };
-EKIT_COMPONENT(Health);
+struct Health {
+    int hp = 100;
+    EKIT_COMPONENT(Health);
+};
 
 // Reads nothing, writes Velocity (applies gravity).
 struct GravitySystem {
@@ -80,3 +88,4 @@ int main() {
                 world.Query<Position, Velocity>().Count());
     return 0;
 }
+

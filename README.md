@@ -1,14 +1,20 @@
-﻿# Ekit
+# Ekit
 
 **Ekit** is a friendly, header-only, **C++20 ECS** (Entity-Component-System) library
-designed as a modern replacement for [EnTT](https://github.com/skypjack/entt) in game
-engines. It keeps the performance of a sparse-set ECS while making the API read like
-C# LINQ + Unity DOTS: explicit, fluent, and zero-overhead.
+for game engines. Most ECS libraries fall into two camps: powerful but hard to use
+(deep template metaprogramming, cryptic compile errors), or simple but slow. Ekit is
+designed to escape that trade-off - sparse-set performance with an API that reads like
+C# LINQ + Unity DOTS: explicit, fluent, and zero-overhead. So you spend your time on
+game logic, not plumbing.
+
+[EnTT](https://github.com/skypjack/entt) is a battle-tested, feature-rich ECS library.
+Ekit is a smaller, deliberately ergonomic alternative focused on a friendly API and a
+lean feature set - pick whichever fits your project.
 
 ## Design philosophy
 
-1. **Explicit over implicit (C#, not EnTT)**
-   - Components must be declared with `EKIT_COMPONENT(T)` and explicitly registered:
+1. **Explicit over implicit**
+   - Components must be declared by adding `EKIT_COMPONENT(T)` inside the struct and explicitly registered:
      `world.RegisterComponent<T>()`. No magic implicit registration.
    - Using an undeclared component produces a readable `static_assert`; using an
      unregistered one throws a clear `EkitException` telling you exactly what to call.
@@ -34,11 +40,17 @@ C# LINQ + Unity DOTS: explicit, fluent, and zero-overhead.
 ```cpp
 #include <ekit/ekit.hpp>
 
-struct Position { float x = 0.f, y = 0.f; };
-EKIT_COMPONENT(Position);
+struct Position {
+    float x = 0.f;
+    float y = 0.f;
+    EKIT_COMPONENT(Position);
+};
 
-struct Velocity { float vx = 0.f, vy = 0.f; };
-EKIT_COMPONENT(Velocity);
+struct Velocity {
+    float vx = 0.f;
+    float vy = 0.f;
+    EKIT_COMPONENT(Velocity);
+};
 
 int main() {
     ekit::World world;
@@ -61,7 +73,7 @@ int main() {
 
 - **Entity** — strong-typed, generation-based handle with dangling-handle safety
   (`Entity::Null`, `IsAlive`, automatic slot recycling with generation bumps).
-- **Component** — POD structs declared with `EKIT_COMPONENT(T)`; explicit
+- **Component** — POD structs declaring `EKIT_COMPONENT(T)` inside the class body; explicit
   `world.RegisterComponent<T>()`; sparse-set storage (cache-friendly dense arrays,
   swap-and-pop removal).
 - **World** — entity create/destroy, component `Add / Emplace / Set / Get / TryGet /
@@ -121,6 +133,28 @@ Header-only, zero runtime dependencies:
 
 Requires C++20 (MSVC 19.29+, GCC 11+, Clang 14+).
 
+## Case study: Boids
+
+`examples/boids/` is a complete flocking simulation built on ekit. It showcases
+explicit component registration, fluent queries, systems with `Reads/Writes`
+declarations, the parallel scheduler (four boid-rule systems run concurrently),
+spatial-hash neighbor queries, and a classic two-phase frame pipeline:
+
+```bash
+# Real-time window (GLFW + OpenGL, GPU rendering). GLFW is NOT part of this
+# repo: clone https://github.com/chnnasn/glfw outside the repo, then:
+cmake -S . -B build -DEKIT_GLFW_ROOT=E:/Github/glfw
+cmake --build build --config Release --target ekit_boids_live
+./build/examples/boids/Release/ekit_boids_live.exe --boids 220    # SPACE pause, R reset, ESC quit
+
+# Headless: PPM frames -> animated GIF
+cmake --build build --config Release --target ekit_boids
+./build/examples/boids/Release/ekit_boids.exe --boids 220 --frames 180
+powershell -ExecutionPolicy Bypass -File examples/boids/render.ps1 -Fps 30   # -> boids.gif
+```
+
+See [examples/boids/README.md](examples/boids/README.md) for details.
+
 ## Building & testing
 
 ```bash
@@ -156,3 +190,4 @@ include/ekit/
 ## License
 
 [MIT](LICENSE) © 2026 chnnasn
+
