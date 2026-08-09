@@ -1,0 +1,9 @@
+﻿# Build output
+build*/
+out/
+*.user
+.vs/
+__pycache__/
+agents.md
+
+
