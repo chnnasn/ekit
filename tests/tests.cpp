@@ -638,6 +638,208 @@ TEST(manual_component_registration) {
 }
 
 // ---------------------------------------------------------------------------
+// Regression tests
+// ---------------------------------------------------------------------------
+
+// Iterating a query after entities were destroyed must only visit the alive
+// ones, and the destroyed entities' components must be cleaned out of storage.
+TEST(regression_query_after_destroy) {
+    ekit::World world;
+    world.RegisterComponents<Position, Velocity>();
+
+    std::vector<ekit::Entity> all;
+    for (int i = 0; i < 10; ++i) {
+        ekit::Entity e = world.Create();
+        world.Add<Position>(e, float(i), 0.f);
+        world.Add<Velocity>(e, 1.f, 1.f);
+        all.push_back(e);
+    }
+    for (int i = 0; i < 4; ++i) {
+        world.Destroy(all[i]);
+    }
+
+    int seen = 0;
+    float sum = 0.f;
+    world.Query<Position, Velocity>().ForEach(
+        [&](const Position& p, const Velocity&) { ++seen; sum += p.x; });
+    CHECK_EQ(seen, 6);
+    CHECK_EQ(sum, 4.f + 5.f + 6.f + 7.f + 8.f + 9.f);
+    CHECK_EQ(world.GetStorage<Position>().Size(), 6u);
+    CHECK_EQ(world.GetStorage<Velocity>().Size(), 6u);
+    CHECK_EQ(world.GetAliveEntityCount(), 6u);
+}
+
+// A destroyed (freed) slot must be unreachable through every access path, and
+// after the slot is recycled the stale handle must stay dead.
+TEST(regression_free_slot_access) {
+    ekit::World world;
+    world.RegisterComponent<Position>();
+
+    ekit::Entity e = world.Create();
+    world.Add<Position>(e, 5.f, 5.f);
+    const ekit::EntityId idx = e.GetIndex();
+    const ekit::EntityGeneration gen = e.GetGeneration();
+
+    world.Destroy(e);
+
+    CHECK(world.GetEntity(idx) == ekit::Entity::Null);
+    CHECK(!world.IsAlive(e));
+    CHECK(!world.Has<Position>(e));
+    CHECK(world.TryGet<Position>(e) == nullptr);
+    CHECK(!world.Remove<Position>(e));
+    CHECK_THROWS_AS(world.Get<Position>(e), ekit::EkitException);
+    CHECK_THROWS_AS(world.Add<Position>(e, 1.f, 1.f), ekit::EkitException);
+
+    // The slot is recycled with a bumped generation; the stale handle is dead.
+    ekit::Entity fresh = world.Create();
+    CHECK_EQ(fresh.GetIndex(), idx);
+    CHECK_EQ(fresh.GetGeneration(), gen + 1);
+    CHECK(world.IsAlive(fresh));
+    CHECK(!world.IsAlive(e));
+
+    world.Add<Position>(fresh, 9.f, 9.f);
+    CHECK_EQ(world.Get<Position>(fresh).x, 9.f);
+    CHECK(!world.Has<Position>(e));
+    CHECK(world.TryGet<Position>(e) == nullptr);
+    CHECK(world.GetStorage<Position>().Contains(idx));
+}
+
+// Adding/removing components during iteration:
+//  * touching storages that are NOT the one being iterated is safe;
+//  * removing the iterated component itself must be deferred until after the
+//    loop (sparse-set swap-and-pop would invalidate the iteration).
+TEST(regression_mutate_components_during_iteration) {
+    ekit::World world;
+    world.RegisterComponents<Position, Velocity, Health>();
+
+    for (int i = 0; i < 5; ++i) {
+        ekit::Entity e = world.Create();
+        world.Add<Position>(e, float(i), 0.f);
+        world.Add<Health>(e, 100);
+    }
+
+    std::vector<ekit::Entity> defer_remove;
+    world.Query<Position>().ForEach([&](ekit::Entity e, Position& p) {
+        // Mutating a different storage mid-iteration is safe.
+        world.Add<Velocity>(e, p.x, p.x);
+        if (e.GetIndex() % 2 == 0) {
+            world.Remove<Health>(e);
+        }
+        // Removing the iterated component is deferred until after the loop.
+        if (p.x > 2.f) {
+            defer_remove.push_back(e);
+        }
+    });
+
+    for (ekit::Entity e : defer_remove) {
+        world.Remove<Position>(e);
+    }
+
+    CHECK_EQ(world.Query<Position>().Count(), 3u);
+    CHECK_EQ(world.Query<Velocity>().Count(), 5u);
+    CHECK_EQ(world.Query<Health>().Count(), 3u); // even indices 2 and 4 removed
+}
+
+// Wrapping the 16-bit generation counter: the wrapped slot must be permanently
+// dead and new entities must be allocated at fresh indices.
+TEST(regression_generation_overflow) {
+    ekit::World world;
+
+    ekit::Entity e = world.Create(); // index 1, generation 1
+    const ekit::EntityId slot = e.GetIndex();
+    const ekit::EntityGeneration first_gen = e.GetGeneration();
+
+    // Cycle the same slot until its generation wraps (uint16 -> 0).
+    for (int i = 0; i < 70000; ++i) {
+        world.Destroy(e);
+        e = world.Create();
+    }
+
+    CHECK(!world.IsAlive(ekit::Entity(slot, first_gen))); // pre-wrap handle dead
+    CHECK(world.IsAlive(e));
+
+    // The wrapped slot must never be handed out again.
+    ekit::Entity a = world.Create();
+    ekit::Entity b = world.Create();
+    CHECK(a.GetIndex() != slot);
+    CHECK(b.GetIndex() != slot);
+    CHECK(world.IsAlive(a));
+    CHECK(world.IsAlive(b));
+}
+
+// Unsubscribing a handler from inside its own callback must remove it for the
+// next emit without disturbing other handlers or crashing mid-emit.
+TEST(regression_event_unsubscribe_self_during_emit) {
+    ekit::World world;
+
+    int self_runs = 0;
+    int other_runs = 0;
+    ekit::EventSubscription self;
+    self = world.Subscribe<RespawnEvent>([&](const RespawnEvent&) {
+        ++self_runs;
+        self.Unsubscribe();
+    });
+    ekit::EventSubscription other =
+        world.Subscribe<RespawnEvent>([&](const RespawnEvent&) { ++other_runs; });
+
+    world.Emit<RespawnEvent>();
+    CHECK_EQ(self_runs, 1);
+    CHECK_EQ(other_runs, 1);
+
+    world.Emit<RespawnEvent>();
+    CHECK_EQ(self_runs, 1);  // self removed itself
+    CHECK_EQ(other_runs, 2); // the other handler is still active
+    (void)other;
+}
+
+// A system throwing inside a parallel scheduler run must not poison the thread
+// pool: the error is rethrown, and the scheduler can be run again afterwards.
+struct ThrowingSystem {
+    std::atomic<int>* calls;
+    void Execute(ekit::World&) {
+        calls->fetch_add(1);
+        throw ekit::EkitException("boom");
+    }
+};
+struct CountingSystem {
+    std::atomic<int>* calls;
+    void Execute(ekit::World&) { calls->fetch_add(1); }
+};
+
+TEST(regression_scheduler_recover_after_task_exception) {
+    ekit::World world;
+    world.RegisterComponent<Position>();
+    for (int i = 0; i < 64; ++i) {
+        world.Add<Position>(world.Create(), 0.f, 0.f);
+    }
+
+    std::atomic<int> throws{0};
+    std::atomic<int> counts{0};
+
+    {
+        ekit::Scheduler sched(2);
+        sched.AddSystem(ThrowingSystem{&throws});
+        sched.AddSystem(CountingSystem{&counts});
+
+        // Both systems run in parallel; the throwing one aborts the run.
+        CHECK_THROWS_AS(sched.Run(world), ekit::EkitException);
+        CHECK_EQ(throws.load(), 1);
+        CHECK_EQ(counts.load(), 1);
+
+        // The pool must remain usable: running again throws again, no deadlock.
+        CHECK_THROWS_AS(sched.Run(world), ekit::EkitException);
+        CHECK_EQ(throws.load(), 2);
+        CHECK_EQ(counts.load(), 2);
+    }
+
+    // A fresh scheduler with only the counting system works normally.
+    ekit::Scheduler sched2(2);
+    sched2.AddSystem(CountingSystem{&counts});
+    sched2.Run(world);
+    CHECK_EQ(counts.load(), 3);
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
