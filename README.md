@@ -1,5 +1,7 @@
 # Ekit
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 **Ekit** is a friendly, header-only, **C++20 ECS** (Entity-Component-System) library
 for game engines. Most ECS libraries fall into two camps: powerful but hard to use
 (deep template metaprogramming, cryptic compile errors), or simple but slow. Ekit is
@@ -190,4 +192,3 @@ include/ekit/
 ## License
 
 [MIT](LICENSE) © 2026 chnnasn
-

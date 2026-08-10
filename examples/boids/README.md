@@ -1,5 +1,7 @@
 # ekit Boids — a flocking (Boids) case study built on ekit
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 A complete implementation of the classic Boids flocking algorithm (Craig Reynolds)
 built on **ekit**, serving as a full case study for the library. It demonstrates
 ekit's core capabilities: **explicit component registration, fluent queries,
