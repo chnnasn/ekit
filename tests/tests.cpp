@@ -81,6 +81,32 @@ TEST(entity_stale_handle_detection) {
     CHECK(world.IsAlive(second));
 }
 
+TEST(entity_destroyed_slot_is_not_alive) {
+    ekit::World world;
+    ekit::Entity first = world.Create();
+    ekit::Entity destroyed = world.Create();
+    ekit::Entity third = world.Create();
+
+    world.Destroy(destroyed);
+
+    CHECK(world.GetEntity(destroyed.GetIndex()) == ekit::Entity::Null);
+    CHECK(!world.IsAlive(destroyed));
+    CHECK_EQ(world.GetAliveEntityCount(), 2u);
+
+    std::vector<ekit::Entity> visited;
+    world.ForEachEntity([&](ekit::Entity e) { visited.push_back(e); });
+    CHECK_EQ(visited.size(), 2u);
+    CHECK(visited[0] == first);
+    CHECK(visited[1] == third);
+
+    ekit::Entity replacement = world.Create();
+    CHECK_EQ(replacement.GetIndex(), destroyed.GetIndex());
+    CHECK_EQ(replacement.GetGeneration(), destroyed.GetGeneration() + 1);
+    CHECK(world.GetEntity(replacement.GetIndex()) == replacement);
+    CHECK(world.IsAlive(replacement));
+    CHECK(!world.IsAlive(destroyed));
+}
+
 TEST(entity_null) {
     ekit::Entity e;
     CHECK(!e.IsValid());
@@ -618,7 +644,6 @@ TEST(manual_component_registration) {
 int main() {
     return testfw::RunAll();
 }
-
 
 
 

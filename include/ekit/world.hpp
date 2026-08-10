@@ -182,13 +182,16 @@ public:
                 index = static_cast<EntityId>(entities_.size());
                 generation = 1;
                 entities_.emplace_back(index, generation);
+                alive_.push_back(1);
             } else {
                 entities_[index] = Entity(index, generation);
+                alive_[index] = 1;
             }
         } else {
             index = static_cast<EntityId>(entities_.size());
             generation = 1;
             entities_.emplace_back(index, generation);
+            alive_.push_back(1);
         }
         ++alive_count_;
         return Entity(index, generation);
@@ -222,6 +225,7 @@ public:
 
         const auto generation = static_cast<EntityGeneration>(e.GetGeneration() + 1);
         entities_[index] = Entity(index, generation);
+        alive_[index] = 0;
         if (generation != 0) {
             free_list_.push_back(index);
         }
@@ -229,25 +233,25 @@ public:
     }
 
     bool IsAlive(Entity e) const {
-        return e.IsValid() && e.GetIndex() < entities_.size() && entities_[e.GetIndex()] == e;
+        return e.IsValid() && e.GetIndex() < entities_.size() && alive_[e.GetIndex()] != 0 &&
+               entities_[e.GetIndex()] == e;
     }
 
     std::size_t GetAliveEntityCount() const {
         return alive_count_;
     }
 
-    // Entity currently stored at the given index (may be dead / recycled).
+    // Alive entity currently stored at the given index, or Entity::Null.
     Entity GetEntity(EntityId index) const {
-        return index < entities_.size() ? entities_[index] : Entity::Null;
+        return index < entities_.size() && alive_[index] != 0 ? entities_[index] : Entity::Null;
     }
 
     // Iterates all currently alive entities.
     template<typename F>
     void ForEachEntity(F&& f) const {
         for (std::size_t i = 1; i < entities_.size(); ++i) {
-            const Entity e = entities_[i];
-            if (e.GetGeneration() != 0) {
-                f(e);
+            if (alive_[i] != 0) {
+                f(entities_[i]);
             }
         }
     }
@@ -393,6 +397,7 @@ public:
         }
         free_list_.clear();
         entities_.assign(1, Entity::Null);
+        alive_.assign(1, 0);
         alive_count_ = 0;
         name_to_entity_.clear();
         entity_to_name_.clear();
@@ -528,8 +533,10 @@ private:
     std::vector<std::unique_ptr<IComponentStorage>> storages_;
     std::size_t storage_count_ = 0;
 
-    // Entity storage: index -> Entity. Slot 0 is reserved for Entity::Null.
+    // Entity storage: index -> current generation, with explicit liveness.
+    // Slot 0 is reserved for Entity::Null.
     std::vector<Entity> entities_{Entity::Null};
+    std::vector<std::uint8_t> alive_{0};
     std::vector<EntityId> free_list_;
     std::size_t alive_count_ = 0;
 
@@ -554,7 +561,6 @@ inline void EventSubscription::Unsubscribe() {
 
 
 } // namespace ekit
-
 
 
 
