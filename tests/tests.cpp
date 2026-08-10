@@ -4,6 +4,7 @@
 #include "test_framework.hpp"
 
 #include <atomic>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -585,21 +586,58 @@ TEST(scheduler_parallel_execution) {
     CHECK_EQ(counter.load(), 3000);
 }
 
-struct CycleA {
+// Two writers of the same component are NOT a cycle anymore: they are
+// serialized in registration order. With several worker threads this would be
+// nondeterministic without the dependency edges, so the recorded order proves
+// the serialization.
+struct WriterRecorderSystem {
+    int id;
+    std::vector<int>* order;
+    std::mutex* mtx;
     using Writes = ekit::TypeList<Position>;
+    void Execute(ekit::World&) {
+        std::lock_guard<std::mutex> lock(*mtx);
+        order->push_back(id);
+    }
+};
+
+TEST(scheduler_two_writers_serialized_in_registration_order) {
+    ekit::World world;
+    world.RegisterComponent<Position>();
+    for (int i = 0; i < 32; ++i) {
+        world.Add<Position>(world.Create(), 0.f, 0.f);
+    }
+
+    std::vector<int> order;
+    std::mutex mtx;
+    ekit::Scheduler scheduler(4);
+    scheduler.AddSystem(WriterRecorderSystem{0, &order, &mtx})
+             .AddSystem(WriterRecorderSystem{1, &order, &mtx})
+             .AddSystem(WriterRecorderSystem{2, &order, &mtx});
+
+    scheduler.Run(world); // must NOT throw
+    CHECK(order == std::vector<int>({0, 1, 2})); // registration order
+}
+
+// A genuine dependency contradiction (A writes X / reads Y, B writes Y / reads
+// X) must still be reported as a cycle.
+struct GenuineCycleA {
+    using Reads = ekit::TypeList<Position>;
+    using Writes = ekit::TypeList<Velocity>;
     void Execute(ekit::World&) {}
 };
-struct CycleB {
+struct GenuineCycleB {
+    using Reads = ekit::TypeList<Velocity>;
     using Writes = ekit::TypeList<Position>;
     void Execute(ekit::World&) {}
 };
 
-TEST(scheduler_cycle_detection) {
+TEST(scheduler_genuine_cycle_detection) {
     ekit::World world;
-    world.RegisterComponent<Position>();
+    world.RegisterComponents<Position, Velocity>();
     ekit::Scheduler scheduler;
-    scheduler.AddSystem(CycleA{});
-    scheduler.AddSystem(CycleB{});
+    scheduler.AddSystem(GenuineCycleA{});
+    scheduler.AddSystem(GenuineCycleB{});
     CHECK_THROWS_AS(scheduler.Run(world), ekit::EkitException);
 }
 

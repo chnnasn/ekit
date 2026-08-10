@@ -111,8 +111,10 @@ int main() {
            .AddSystem(MoveSystem{});
   scheduler.Run(world);                   // or RunSingleThreaded(world)
   ```
-  A writer is ordered before every reader/writer of the same component; two writers of
-  the same component are a genuine conflict and are reported as a dependency cycle.
+  A writer is ordered before every reader of the same component. Two writers of the
+  same component do not form a cycle: they are serialized in registration order.
+  A cycle is only reported when the declared dependencies genuinely contradict
+  each other (e.g. A writes X / reads Y while B writes Y / reads X).
 - **Event** — `world.Subscribe<T>(handler)` / `world.Emit<T>(args...)`:
   ```cpp
   struct HitEvent { int damage; ekit::Entity target; };

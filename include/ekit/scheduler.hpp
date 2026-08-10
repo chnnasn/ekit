@@ -193,6 +193,37 @@ private:
         return false;
     }
 
+    // Kahn's algorithm: true when the dependency graph has no cycle.
+    static bool IsAcyclic(const std::vector<std::vector<bool>>& depends) {
+        const std::size_t n = depends.size();
+        std::vector<std::size_t> indegree(n, 0);
+        for (std::size_t i = 0; i < n; ++i) {
+            for (std::size_t j = 0; j < n; ++j) {
+                if (depends[i][j]) {
+                    ++indegree[j];
+                }
+            }
+        }
+        std::queue<std::size_t> ready;
+        for (std::size_t i = 0; i < n; ++i) {
+            if (indegree[i] == 0) {
+                ready.push(i);
+            }
+        }
+        std::size_t processed = 0;
+        while (!ready.empty()) {
+            const std::size_t i = ready.front();
+            ready.pop();
+            ++processed;
+            for (std::size_t j = 0; j < n; ++j) {
+                if (depends[i][j] && --indegree[j] == 0) {
+                    ready.push(j);
+                }
+            }
+        }
+        return processed == n;
+    }
+
     void RunImpl(World& world, bool parallel) {
         const std::size_t n = systems_.size();
         if (n == 0) {
@@ -206,21 +237,42 @@ private:
         }
 
         // depends[i][j] == true  =>  system i must finish before system j.
-        // A writer is ordered before every reader/writer of the same component;
-        // two writers of the same component form a cycle (genuine conflict).
+        //
+        // Hard edges: a writer is ordered before every reader of the same
+        // component (writes_i ? reads_j -> i before j). If these alone form a
+        // cycle, the declared dependencies genuinely contradict each other and
+        // we report a cycle.
         std::vector<std::vector<bool>> depends(n, std::vector<bool>(n, false));
         for (std::size_t i = 0; i < n; ++i) {
             for (std::size_t j = 0; j < n; ++j) {
                 if (i == j) {
                     continue;
                 }
-                if (Overlaps(deps[i].writes, deps[j].reads) ||
-                    Overlaps(deps[i].writes, deps[j].writes)) {
-                    depends[i][j] = true; // i writes something j reads/writes
+                if (Overlaps(deps[i].writes, deps[j].reads)) {
+                    depends[i][j] = true; // i writes something j reads
                 }
-                if (Overlaps(deps[j].writes, deps[i].reads) ||
-                    Overlaps(deps[j].writes, deps[i].writes)) {
-                    depends[j][i] = true; // j writes something i reads/writes
+            }
+        }
+
+        if (!IsAcyclic(depends)) {
+            throw EkitException(
+                "ekit: Scheduler detected a genuine dependency conflict: the "
+                "Reads/Writes declarations form a cycle. Review the declarations "
+                "of your systems.");
+        }
+
+        // Soft edges: two writers of the same component do NOT form a cycle -
+        // they are serialized in registration order (the earlier-registered
+        // system runs first). Such an edge is only a tie-breaker, so it is
+        // dropped when it would conflict with the hard dataflow edges.
+        for (std::size_t i = 0; i < n; ++i) {
+            for (std::size_t j = i + 1; j < n; ++j) {
+                if (!Overlaps(deps[i].writes, deps[j].writes)) {
+                    continue;
+                }
+                depends[i][j] = true; // i was registered before j
+                if (!IsAcyclic(depends)) {
+                    depends[i][j] = false;
                 }
             }
         }
@@ -260,8 +312,9 @@ private:
 
         if (processed != n) {
             throw EkitException(
-                "ekit: Scheduler detected a dependency cycle among systems. "
-                "Review the Reads/Writes declarations of your systems.");
+                "ekit: Scheduler detected a genuine dependency conflict: the "
+                "Reads/Writes declarations form a cycle. Review the declarations "
+                "of your systems.");
         }
 
         std::size_t max_level = 0;
