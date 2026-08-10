@@ -1,13 +1,16 @@
 ﻿# Convert PPM frames produced by ekit_boids into PNG images and an animated GIF.
 #
 # Usage:
-#   powershell -ExecutionPolicy Bypass -File render.ps1 [-Dir frames] [-Fps 30] [-Out boids.gif] [-PngDir png]
+#   powershell -ExecutionPolicy Bypass -File render.ps1 [-Dir frames] [-Fps 30] [-Out boids.gif] [-PngDir png] [-Scale 1.0] [-Label] [-Title "threads=4 | ~27 fps"]
 
 param(
     [string]$Dir = "frames",
     [int]$Fps = 30,
     [string]$Out = "boids.gif",
-    [string]$PngDir = "png"
+    [string]$PngDir = "png",
+    [double]$Scale = 1.0,
+    [switch]$Label,
+    [string]$Title = ""
 )
 
 Add-Type -AssemblyName System.Drawing
@@ -53,7 +56,7 @@ function Read-Ppm([string]$Path) {
     }
 }
 
-function Ppm-ToBitmap($ppm) {
+function Ppm-ToBitmap($ppm, [double]$scale) {
     $w = $ppm.W
     $h = $ppm.H
     $bmp = [System.Drawing.Bitmap]::new($w, $h, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
@@ -73,6 +76,18 @@ function Ppm-ToBitmap($ppm) {
     } finally {
         $bmp.UnlockBits($data)
     }
+
+    if ($scale -lt 1.0) {
+        $sw = [int][Math]::Max(1, [Math]::Round($w * $scale))
+        $sh = [int][Math]::Max(1, [Math]::Round($h * $scale))
+        $scaled = [System.Drawing.Bitmap]::new($sw, $sh, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
+        $g = [System.Drawing.Graphics]::FromImage($scaled)
+        $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBilinear
+        $g.DrawImage($bmp, 0, 0, $sw, $sh)
+        $g.Dispose()
+        $bmp.Dispose()
+        return $scaled
+    }
     return $bmp
 }
 
@@ -85,9 +100,25 @@ if ($PngDir -and $PngDir.Length -gt 0) {
 }
 
 $frames = [System.Collections.Generic.List[System.Drawing.Bitmap]]::new()
-foreach ($f in $files) {
+for ($fi = 0; $fi -lt $files.Count; $fi++) {
+    $f = $files[$fi]
     $ppm = Read-Ppm $f.FullName
-    $bmp = Ppm-ToBitmap $ppm
+    $bmp = Ppm-ToBitmap $ppm $Scale
+    if ($Label) {
+        # Stamp "frame N / total" in the top-left corner.
+        $g = [System.Drawing.Graphics]::FromImage($bmp)
+        $font = New-Object System.Drawing.Font("Consolas", 10, [System.Drawing.FontStyle]::Bold)
+        if ($Title) {
+            $text = ("{0}  |  frame {1} / {2}" -f $Title, ($fi + 1), $files.Count)
+        } else {
+            $text = ("frame {0} / {1}" -f ($fi + 1), $files.Count)
+        }
+        $size = $g.MeasureString($text, $font)
+        $g.FillRectangle([System.Drawing.Brushes]::FromArgb(180, 0, 0, 0), 2, 2, $size.Width + 8, $size.Height + 4)
+        $g.DrawString($text, $font, [System.Drawing.Brushes]::White, 6, 4)
+        $font.Dispose()
+        $g.Dispose()
+    }
     if ($PngDir) {
         $pngPath = Join-Path $PngDir ([System.IO.Path]::GetFileNameWithoutExtension($f.Name) + ".png")
         $bmp.Save($pngPath, [System.Drawing.Imaging.ImageFormat]::Png)

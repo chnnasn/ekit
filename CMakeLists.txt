@@ -5,6 +5,7 @@ option(EKIT_BUILD_TESTS "Build the ekit test suite" ON)
 option(EKIT_BUILD_EXAMPLES "Build the ekit examples" ON)
 option(EKIT_BUILD_BOIDS "Build the boids case study" ON)
 option(EKIT_BUILD_BOIDS_LIVE "Build the boids GLFW live viewer (needs local GLFW)" ON)
+option(EKIT_BUILD_ENTT_COMPARE "Build the ekit vs EnTT comparison benchmark (needs local EnTT)" ON)
 set(EKIT_GLFW_ROOT "" CACHE PATH "Path to a local GLFW checkout (NOT part of this repo)")
 
 # ---------------------------------------------------------------------------

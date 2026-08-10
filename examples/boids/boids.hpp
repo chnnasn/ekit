@@ -172,6 +172,13 @@ public:
                 const int cy = Clamp(int(p.y / cell_size_), 0, rows_ - 1);
                 cells_[static_cast<std::size_t>(cy) * cols_ + cx].push_back(e);
             });
+        // Sort each cell by entity id so the neighbor iteration order (and
+        // therefore the floating-point accumulation) is fully deterministic.
+        for (auto& cell : cells_) {
+            if (cell.size() > 1) {
+                std::sort(cell.begin(), cell.end());
+            }
+        }
     }
 
     // Calls fn(entity) for every entity within `radius` of `center`.

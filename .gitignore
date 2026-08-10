@@ -8,6 +8,10 @@ agents.md
 
 # Boids demo outputs
 frames*/
-png/
+png*/
 *.ppm
 *.gif
+!examples/boids/boids_t1.gif
+!examples/boids/boids_t2.gif
+!examples/boids/boids_t3.gif
+!examples/boids/boids_t4.gif

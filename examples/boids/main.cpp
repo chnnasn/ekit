@@ -10,6 +10,7 @@
 #include "cli.hpp"
 #include "render_helpers.hpp"
 
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <random>
@@ -61,6 +62,7 @@ int main(int argc, char** argv) {
     boids::Canvas canvas(cfg.width, cfg.height);
     const boids::Color background{14, 18, 30};
 
+    const auto t_start = std::chrono::steady_clock::now();
     for (int frame = 0; frame < cfg.frames; ++frame) {
         grid.Build(world); // synchronous; read-only during the scheduler phase
         steering_scheduler.Run(world);
@@ -77,6 +79,9 @@ int main(int argc, char** argv) {
         const std::string path = cfg.out_dir + "/" + name;
         canvas.WritePPM(path);
     }
+
+    const auto t_end = std::chrono::steady_clock::now();
+    const double elapsed_s = std::chrono::duration<double>(t_end - t_start).count();
 
     // ------------------------------------------------------------------
     // 5. Final stats.
@@ -97,6 +102,8 @@ int main(int argc, char** argv) {
     std::printf("flocks      : %d\n", flocks);
     std::printf("frames      : %d -> %s/\n", cfg.frames, cfg.out_dir.c_str());
     std::printf("threads     : %u\n", cfg.threads);
+    std::printf("avg fps     : %.1f (%d frames in %.2f s)\n",
+                static_cast<double>(cfg.frames) / elapsed_s, cfg.frames, elapsed_s);
     std::printf("phases      : steering (rules, parallel) -> integrate\n");
     return 0;
 }

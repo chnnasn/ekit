@@ -62,9 +62,9 @@ int main() {
 ## 功能
 
 - **实体（Entity）**：强类型、带世代编号的句柄，可安全处理失效句柄（`Entity::Null`、`IsAlive`，槽位回收时自动递增世代编号）。
-- **组件（Component）**：在类体内通过 `EKIT_COMPONENT(T)` 声明的 POD 结构体；使用 `world.RegisterComponent<T>()` 显式注册；采用稀疏集存储（缓存友好的密集数组及交换删除）。
-- **世界（World）**：支持实体创建与销毁、组件 `Add / Emplace / Set / Get / TryGet / Has / Remove / Patch / Clear`、命名实体、批量注册和 `ClearAll`。
-- **查询（Query）**：支持 `Where / With / Without / Optional / ForEach / Count` 的流式查询，并从符合条件的最小存储开始迭代：
+- **组件（Component）**：在类体内通过 `EKIT_COMPONENT(T)` 声明的 POD 结构体；使用 `world.RegisterComponent<T>()` 显式注册；采用稀疏集存储（缓存友好的密集数组与交换删除）。
+- **世界（World）**：实体创建与销毁、组件 `Add / Emplace / Set / Get / TryGet / Has / Remove / Patch / Clear`、命名实体、批量注册和 `ClearAll`。
+- **查询（Query）**：支持 `Where / With / Without / Optional / ForEach / Count` 的流畅查询，并从符合条件的存储中最小的那个开始迭代：
   ```cpp
   world.Query<Position, Velocity>()
        .With<Renderable>()
@@ -92,7 +92,7 @@ int main() {
            .AddSystem(MoveSystem{});
   scheduler.Run(world);                   // 也可以使用 RunSingleThreaded(world)
   ```
-  写入者会排在同一组件的所有读取者和写入者之前；两个系统同时写入同一组件属于真实冲突，会被报告为依赖环。
+  写入者会排在读取同一组件的读取者之前。两个写入同一组件的系统**不再形成依赖环**：它们按注册顺序串行执行。只有当声明的依赖真正互相矛盾（例如 A 写 X / 读 Y，而 B 写 Y / 读 X）时才会报告依赖环。
 - **事件（Event）**：使用 `world.Subscribe<T>(handler)` / `world.Emit<T>(args...)`：
   ```cpp
   struct HitEvent { int damage; ekit::Entity target; };
@@ -104,35 +104,66 @@ int main() {
 
 ## 集成
 
-仅包含头文件，无运行时依赖：
+仅包含头文件、零运行时依赖：
 
 - **CMake**
   ```cmake
   add_subdirectory(ekit)
   target_link_libraries(app PRIVATE ekit::ekit)
   ```
-- **手动集成**：将 `include/` 添加到 include 路径，并使用 `#include <ekit/ekit.hpp>`。
+- **手动**：将 `include/` 加入包含路径，然后 `#include <ekit/ekit.hpp>`。
 
-要求 C++20（MSVC 19.29+、GCC 11+、Clang 14+）。
+需要 C++20（MSVC 19.29+、GCC 11+、Clang 14+）。
 
 ## 案例：Boids
 
-`examples/boids/` 是一个基于 Ekit 构建的完整鸟群模拟示例，展示了显式组件注册、流式查询、带 `Reads/Writes` 声明的系统、并行调度器（四个鸟群规则系统并发运行）、空间哈希邻居查询，以及经典的两阶段帧流水线：
+`examples/boids/` 是一个基于 ekit 构建的完整鸟群模拟，展示了显式组件注册、流畅查询、带 `Reads/Writes` 声明的系统、并行调度器（四条规则系统并发执行）、空间哈希近邻查询，以及经典的二阶段帧管线：
 
 ```bash
-# 实时窗口（GLFW + OpenGL，GPU 渲染）。GLFW 不包含在本仓库中：
-# 请将 https://github.com/chnnasn/glfw 克隆到仓库外，然后执行：
+# 实时窗口（GLFW + OpenGL，GPU 渲染）。GLFW 不在本仓库内：
+# 先在仓库外克隆 https://github.com/chnnasn/glfw，然后：
 cmake -S . -B build -DEKIT_GLFW_ROOT=E:/Github/glfw
 cmake --build build --config Release --target ekit_boids_live
-./build/examples/boids/Release/ekit_boids_live.exe --boids 220    # 空格暂停、R 重置、ESC 退出
+./build/examples/boids/Release/ekit_boids_live.exe --boids 220    # SPACE 暂停, R 重置, ESC 退出
 
-# 无窗口模式：PPM 帧 -> 动态 GIF
+# 无头模式：PPM 帧 -> 动画 GIF（无需 GLFW）
 cmake --build build --config Release --target ekit_boids
 ./build/examples/boids/Release/ekit_boids.exe --boids 220 --frames 180
-powershell -ExecutionPolicy Bypass -File examples/boids/render.ps1 -Fps 30   # 输出 boids.gif
+powershell -ExecutionPolicy Bypass -File examples/boids/render.ps1 -Fps 30   # -> boids.gif
 ```
 
-详细说明请参阅 [examples/boids/README.md](examples/boids/README.md)。
+详见 [examples/boids/README.md](examples/boids/README.md)。
+
+## 基准测试
+
+完整测试条件、原始数据与分析脚本见 [`benchmarks/`](benchmarks/README.md)。要点结果（Intel i7-14650HX，24 线程，MSVC Release /O2，世界 800x600，种子 20260810）：
+
+### 下降曲线：每步耗时随 boid 数量超线性增长
+
+| 从 | 到 | boid 倍数 | 耗时倍数 | 指数 |
+| --- | --- | --- | --- | --- |
+| 200 | 500 | 2.5x | 4.05x | 1.53 |
+| 1000 | 2000 | 2.0x | 3.07x | 1.62 |
+| 5000 | 10000 | 2.0x | 3.41x | 1.77 |
+
+每步耗时按 n^1.5..n^1.8 增长，且指数**随密度上升趋向 2**：世界尺寸固定，boid 数量翻倍 → 密度翻倍 → 每只 boid 的邻居数翻倍，近邻搜索为 O(n x 邻居数)，均匀密度极限下即 O(n^2)。吞吐量从 200 只时的约 270 万 boids/s 跌至 10000 只时的约 28.5 万 boids/s。
+
+![每步耗时 vs boid 数](benchmarks/chart_cost_vs_boids.png)
+
+### 停滞点：并行加速比在 4 线程封顶
+
+| boid 数 | t2 | t4 | t24 |
+| --- | --- | --- | --- |
+| 200 | 1.32x | 1.94x | 1.96x |
+| 10000 | 1.69x | 2.23x | 2.44x |
+
+加速比在 **4 线程**处停止提升（24 线程毫无增益）：依赖图中恰好只有 4 条可并行的规则系统，而网格重建与阶段二链是串行的——这是约 2.2-2.9x 的结构性天花板，而非 4x。
+
+![加速比 vs 线程数](benchmarks/chart_speedup_vs_threads.png)
+
+### ekit vs EnTT（相同算法，EnTT v4）
+
+单线程下 ekit 快约 15-25%（查询迭代更精简）；4 线程下 EnTT 快约 25-30%（按实体分块的 `parallel_for` 对比 ekit 的系统级并行调度）。两者产生的模拟状态位级一致。
 
 ## 构建与测试
 
@@ -144,26 +175,26 @@ ctest --test-dir build -C Release
 
 ## 项目结构
 
-```text
+```
 include/ekit/
   core.hpp        异常、TypeList、类型 ID
   entity.hpp      Entity（带世代编号的句柄）
   component.hpp   EKIT_COMPONENT、ComponentStorage（稀疏集）
-  query.hpp       流式 Query（Where / With / Without / Optional / ForEach）
+  query.hpp       流畅 Query（Where / With / Without / Optional / ForEach）
   world.hpp       World、组件 CRUD、命名实体、事件
-  system.hpp      系统接口及 Reads/Writes 提取
-  scheduler.hpp   依赖图调度器及线程池
+  system.hpp      系统接口 + Reads/Writes 提取
+  scheduler.hpp   依赖图调度器 + 线程池
   ekit.hpp        统一入口
 ```
 
 ## 路线图
 
 - [x] Entity / Component / World 核心（稀疏集存储）
-- [x] 支持 `Where / With / Without / Optional` 的流式 Query
-- [x] System `Reads/Writes` + 并行 Scheduler
+- [x] 流畅 Query（`Where / With / Without / Optional`）
+- [x] 系统 `Reads/Writes` + 并行 Scheduler
 - [x] 事件系统（`Subscribe` / `Emit`）
-- [ ] 原型块（SoA），作为下一层存储方案
-- [ ] 与 `entt` 进行单元测试和基准测试
+- [ ] Archetype 分块（SoA）作为下一层存储
+- [ ] 单元测试 / 与 `entt` 对比基准
 - [ ] CMake 包配置（`find_package(ekit)`）
 
 ## 许可证

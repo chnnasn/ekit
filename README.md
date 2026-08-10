@@ -159,6 +159,47 @@ powershell -ExecutionPolicy Bypass -File examples/boids/render.ps1 -Fps 30   # -
 
 See [examples/boids/README.md](examples/boids/README.md) for details.
 
+## Benchmarks
+
+Full conditions, raw data and the analysis scripts live in
+[`benchmarks/`](benchmarks/README.md). Headline results (Intel i7-14650HX, 24
+threads, MSVC Release /O2, world 800x600, seed 20260810):
+
+### The decline curve: per-step cost grows super-linearly with boid count
+
+| from | to | x boids | x time | exponent |
+| --- | --- | --- | --- | --- |
+| 200 | 500 | 2.5x | 4.05x | 1.53 |
+| 1000 | 2000 | 2.0x | 3.07x | 1.62 |
+| 5000 | 10000 | 2.0x | 3.41x | 1.77 |
+
+Per-step cost scales as n^1.5..n^1.8 and the exponent **rises toward 2 with
+density**: the world is fixed, so doubling the boids doubles the density and
+the number of neighbors per boid - the neighbor search is O(n x neighbors),
+i.e. O(n^2) in the uniform-density limit. Throughput falls from ~2.7M boids/s
+(200 boids) to ~285k boids/s (10000 boids).
+
+![per-step cost vs boids](benchmarks/chart_cost_vs_boids.png)
+
+### The stall point: parallel speedup plateaus at 4 threads
+
+| boids | t2 | t4 | t24 |
+| --- | --- | --- | --- |
+| 200 | 1.32x | 1.94x | 1.96x |
+| 10000 | 1.69x | 2.23x | 2.44x |
+
+Speedup stops improving at **4 threads** (24 threads gains nothing): the
+dependency graph has exactly 4 parallel rule systems, and the grid rebuild plus
+the phase-2 chain are serial - a structural ceiling of ~2.2-2.9x, not 4x.
+
+![speedup vs threads](benchmarks/chart_speedup_vs_threads.png)
+
+### ekit vs EnTT (same algorithm, EnTT v4)
+
+ekit is ~15-25% faster single-threaded (leaner query iteration); EnTT is
+~25-30% faster at 4 threads (entity-chunked `parallel_for` vs ekit's
+system-granularity scheduler). Both produce bit-identical simulation state.
+
 ## Building & testing
 
 ```bash
