@@ -132,11 +132,11 @@ cmake --build build --config Release --target ekit_boids
 powershell -ExecutionPolicy Bypass -File examples/boids/render.ps1 -Fps 30   # -> boids.gif
 ```
 
-详见 [examples/boids/README.md](examples/boids/README.md)。
+详见 [examples/boids/README.zh-CN.md](examples/boids/README.zh-CN.md)。
 
 ## 基准测试
 
-完整测试条件、原始数据与分析脚本见 [`benchmarks/`](benchmarks/README.md)。要点结果（Intel i7-14650HX，24 线程，MSVC Release /O2，世界 800x600，种子 20260810）：
+完整测试条件、原始数据与分析脚本见 [`benchmarks/`](benchmarks/README.zh-CN.md)。要点结果（Intel i7-14650HX，24 线程，MSVC Release /O2，世界 800x600，种子 20260810）：
 
 ### 下降曲线：每步耗时随 boid 数量超线性增长
 

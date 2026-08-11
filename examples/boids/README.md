@@ -10,6 +10,99 @@ plus a spatial hash grid for neighbor queries.
 
 ![boids](boids.gif)
 
+## 10,000-boid recordings (no GLFW needed)
+
+The animated GIFs below are rendered by the **headless** mode (`ekit_boids`) -
+**GLFW is only needed for the interactive live viewer**, so anyone can watch the
+simulation without installing anything. Each recording: 10,000 boids, 90 frames
+@ 30 fps, 800x600 world (downscaled to 400x300), fixed seed.
+
+The simulation is **deterministic**: the same seed and boid count produce
+identical frames regardless of the thread count, so the four clips look the same
+except for the **runtime FPS**, which is measured inside the recorder and stamped
+on every frame. For 90 frames at 800x600 (10000 boids):
+
+| threads | runtime FPS |
+| --- | --- |
+| 1 | ~12 fps |
+| 2 | ~20 fps |
+| 3 | ~29 fps |
+| 4 | ~29 fps |
+
+The stamp reads `threads=N | ~X fps | frame i / 90`.
+
+| threads = 1 | threads = 2 |
+| --- | --- |
+| ![10k boids, 1 thread](boids_t1.gif) | ![10k boids, 2 threads](boids_t2.gif) |
+| threads = 3 | threads = 4 |
+| ![10k boids, 3 threads](boids_t3.gif) | ![10k boids, 4 threads](boids_t4.gif) |
+
+Reproduce them with:
+
+```powershell
+cmake --build build --config Release --target ekit_boids
+.\build\examples\boids\Release\ekit_boids.exe --boids 10000 --frames 90 --threads 1 --out frames_t1
+powershell -ExecutionPolicy Bypass -File examples/boids/render.ps1 -Dir frames_t1 -Fps 30 -Out boids_t1.gif -Scale 0.5 -Label -Title "threads=1 | ~12 fps"
+```
+
+## ekit vs EnTT (same algorithm)
+
+The same boids algorithm (identical rule math, spatial grid, phase order) is
+implemented on both [EnTT](https://github.com/skypjack/entt) (v4, cloned
+externally - **not part of this repo**) and ekit. The two implementations
+produce **bit-identical states** (verified by checksum), so the timings below
+compare the ECS layers only.
+
+```powershell
+# clone EnTT outside the repo once
+git clone --depth 1 https://github.com/skypjack/entt.git E:\Github\entt
+cmake -S . -B build -DENTT_ROOT=E:/Github/entt
+cmake --build build --config Release --target ekit_entt_compare
+.\build\examples\boids\Release\ekit_entt_compare.exe   # 4 groups, EnTT left / ekit right
+```
+
+Measured on this machine (30 timed steps + 10 warmup, world 800x600,
+`ekit/EnTT` < 1 means ekit is faster):
+
+```
+threads = 1
+boids    entt ms/step   ekit ms/step   ekit/entt
+200      0.0978         0.1078         1.103
+1000     1.5310         1.3832         0.903
+5000     27.5485        23.3063        0.846
+10000    92.6480        75.5112        0.815
+
+threads = 2
+200      0.0867         0.0922         1.064
+1000     0.8839         0.8873         1.004
+5000     13.8857        13.8863        1.000
+10000    45.7371        45.4219        0.993
+
+threads = 3
+200      0.0759         0.0652         0.858
+1000     0.6389         0.6180         0.967
+5000     9.5436         9.4031         0.985
+10000    30.8032        30.4022        0.987
+
+threads = 4
+200      0.0753         0.0590         0.783
+1000     0.5106         0.6312         1.236
+5000     7.1973         9.4719         1.316
+10000    23.2569        30.4779        1.310
+```
+
+Takeaways:
+
+- **1 thread: ekit is ~15-18% faster** at 5000/10000 boids - lower per-entity
+  iteration overhead (sparse-set dense arrays, direct query dispatch).
+- **4 threads: EnTT is ~30% faster** at 5000/10000 boids - its chunked
+  `parallel_for` over entities scales better than ekit's scheduler, which
+  parallelizes at the granularity of whole systems (4 rule systems) and pays
+  pool-sync + dependency-analysis overhead per step.
+- At 2-3 threads the two are essentially equal.
+- The spatial grid sorts each cell by entity id so neighbor accumulation is
+  order-independent and bit-deterministic on both sides.
+
 ## Algorithm
 
 Each boid evaluates rules against its neighbors every frame and steers accordingly:
@@ -155,41 +248,6 @@ tool works too (ImageMagick / ffmpeg):
 ffmpeg -framerate 30 -i frames/frame_%04d.ppm boids.gif
 ```
 
-## 10,000-boid recordings (no GLFW needed)
-
-The animated GIFs below are rendered by the **headless** mode (`ekit_boids`) -
-**GLFW is only needed for the interactive live viewer**, so anyone can watch the
-simulation without installing anything. Each recording: 10,000 boids, 90 frames
-@ 30 fps, 800x600 world (downscaled to 400x300), fixed seed.
-
-The simulation is **deterministic**: the same seed and boid count produce
-identical frames regardless of the thread count, so the four clips look the same
-except for the **runtime FPS**, which is measured inside the recorder and stamped
-on every frame. For 90 frames at 800x600 (10000 boids):
-
-| threads | runtime FPS |
-| --- | --- |
-| 1 | ~12 fps |
-| 2 | ~20 fps |
-| 3 | ~29 fps |
-| 4 | ~29 fps |
-
-The stamp reads `threads=N | ~X fps | frame i / 90`.
-
-| threads = 1 | threads = 2 |
-| --- | --- |
-| ![10k boids, 1 thread](boids_t1.gif) | ![10k boids, 2 threads](boids_t2.gif) |
-| threads = 3 | threads = 4 |
-| ![10k boids, 3 threads](boids_t3.gif) | ![10k boids, 4 threads](boids_t4.gif) |
-
-Reproduce them with:
-
-```powershell
-cmake --build build --config Release --target ekit_boids
-.\build\examples\boids\Release\ekit_boids.exe --boids 10000 --frames 90 --threads 1 --out frames_t1
-powershell -ExecutionPolicy Bypass -File examples/boids/render.ps1 -Dir frames_t1 -Fps 30 -Out boids_t1.gif -Scale 0.5 -Label -Title "threads=1 | ~12 fps"
-```
-
 ## Benchmark
 
 `ekit_boids_bench` measures the full per-step cost of the simulation
@@ -243,64 +301,6 @@ Key takeaways:
   its radius (neighbor queries are O(n * avg-neighbors)).
 - 10k boids still runs at ~20 steps/s with 4 threads (~200k boids/s throughput);
   200 boids run at ~14.5k steps/s.
-
-## ekit vs EnTT (same algorithm)
-
-The same boids algorithm (identical rule math, spatial grid, phase order) is
-implemented on both [EnTT](https://github.com/skypjack/entt) (v4, cloned
-externally - **not part of this repo**) and ekit. The two implementations
-produce **bit-identical states** (verified by checksum), so the timings below
-compare the ECS layers only.
-
-```powershell
-# clone EnTT outside the repo once
-git clone --depth 1 https://github.com/skypjack/entt.git E:\Github\entt
-cmake -S . -B build -DENTT_ROOT=E:/Github/entt
-cmake --build build --config Release --target ekit_entt_compare
-.\build\examples\boids\Release\ekit_entt_compare.exe   # 4 groups, EnTT left / ekit right
-```
-
-Measured on this machine (30 timed steps + 10 warmup, world 800x600,
-`ekit/EnTT` < 1 means ekit is faster):
-
-```
-threads = 1
-boids    entt ms/step   ekit ms/step   ekit/entt
-200      0.0978         0.1078         1.103
-1000     1.5310         1.3832         0.903
-5000     27.5485        23.3063        0.846
-10000    92.6480        75.5112        0.815
-
-threads = 2
-200      0.0867         0.0922         1.064
-1000     0.8839         0.8873         1.004
-5000     13.8857        13.8863        1.000
-10000    45.7371        45.4219        0.993
-
-threads = 3
-200      0.0759         0.0652         0.858
-1000     0.6389         0.6180         0.967
-5000     9.5436         9.4031         0.985
-10000    30.8032        30.4022        0.987
-
-threads = 4
-200      0.0753         0.0590         0.783
-1000     0.5106         0.6312         1.236
-5000     7.1973         9.4719         1.316
-10000    23.2569        30.4779        1.310
-```
-
-Takeaways:
-
-- **1 thread: ekit is ~15-18% faster** at 5000/10000 boids - lower per-entity
-  iteration overhead (sparse-set dense arrays, direct query dispatch).
-- **4 threads: EnTT is ~30% faster** at 5000/10000 boids - its chunked
-  `parallel_for` over entities scales better than ekit's scheduler, which
-  parallelizes at the granularity of whole systems (4 rule systems) and pays
-  pool-sync + dependency-analysis overhead per step.
-- At 2-3 threads the two are essentially equal.
-- The spatial grid sorts each cell by entity id so neighbor accumulation is
-  order-independent and bit-deterministic on both sides.
 
 ## Files
 

@@ -1,5 +1,7 @@
 # ekit benchmarks
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 Raw data, test conditions and analysis for the ekit Boids benchmark and the
 ekit vs EnTT comparison. Generated on **2026-08-11**.
 

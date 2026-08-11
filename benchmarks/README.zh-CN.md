@@ -1,5 +1,7 @@
 # ekit 基准测试
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 ekit Boids 基准与 ekit vs EnTT 对比的原始数据、测试条件与分析。生成于 **2026-08-11**。
 
 ## 代码版本

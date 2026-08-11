@@ -6,6 +6,83 @@
 
 ![boids](boids.gif)
 
+## 10,000 boid 录制（无需 GLFW）
+
+下面的动画 GIF 由**无头模式**（`ekit_boids`）渲染。只有交互式实时查看器需要 GLFW，因此无需安装 GLFW 也能查看模拟效果。每段录制均使用 10,000 只 boid、90 帧、30 fps、800x600 世界（缩小至 400x300）和固定种子。
+
+模拟是**确定性的**：在种子和 boid 数量相同时，不同线程数会生成完全相同的帧。因此四段动画除了每帧标注的**运行时 FPS** 外，画面内容一致。800x600、10,000 只 boid、90 帧的结果如下：
+
+| 线程数 | 运行时 FPS |
+| --- | --- |
+| 1 | ~12 fps |
+| 2 | ~22 fps |
+| 3 | ~28 fps |
+| 4 | ~29 fps |
+
+每帧标注格式为 `threads=N | ~X fps | frame i / 90`。
+
+| threads = 1 | threads = 2 |
+| --- | --- |
+| ![10k boids，1 线程](boids_t1.gif) | ![10k boids，2 线程](boids_t2.gif) |
+| threads = 3 | threads = 4 |
+| ![10k boids，3 线程](boids_t3.gif) | ![10k boids，4 线程](boids_t4.gif) |
+
+复现命令：
+
+```powershell
+cmake --build build --config Release --target ekit_boids
+.\build\examples\boids\Release\ekit_boids.exe --boids 10000 --frames 90 --threads 1 --out frames_t1
+powershell -ExecutionPolicy Bypass -File examples/boids/render.ps1 -Dir frames_t1 -Fps 30 -Out boids_t1.gif -Scale 0.5 -Label -Title "threads=1 | ~12 fps"
+```
+
+## ekit vs EnTT（相同算法）
+
+同一套 boid 算法（规则计算、空间网格和阶段顺序均相同）分别基于 [EnTT](https://github.com/skypjack/entt)（v4，外部克隆，**不包含在本仓库中**）和 ekit 实现。校验和验证表明两种实现产生的状态**位级一致**，因此下面的计时只比较 ECS 层。
+
+```powershell
+# 首次在仓库外克隆 EnTT
+git clone --depth 1 https://github.com/skypjack/entt.git E:\Github\entt
+cmake -S . -B build -DENTT_ROOT=E:/Github/entt
+cmake --build build --config Release --target ekit_entt_compare
+.\build\examples\boids\Release\ekit_entt_compare.exe   # 4 组，左侧 EnTT / 右侧 ekit
+```
+
+本机测量结果（30 个计时步 + 10 个预热步，世界大小 800x600；`ekit/EnTT` 小于 1 表示 ekit 更快）：
+
+```
+threads = 1
+boids    entt ms/step   ekit ms/step   ekit/entt
+200      0.0978         0.1078         1.103
+1000     1.5310         1.3832         0.903
+5000     27.5485        23.3063        0.846
+10000    92.6480        75.5112        0.815
+
+threads = 2
+200      0.0867         0.0922         1.064
+1000     0.8839         0.8873         1.004
+5000     13.8857        13.8863        1.000
+10000    45.7371        45.4219        0.993
+
+threads = 3
+200      0.0759         0.0652         0.858
+1000     0.6389         0.6180         0.967
+5000     9.5436         9.4031         0.985
+10000    30.8032        30.4022        0.987
+
+threads = 4
+200      0.0753         0.0590         0.783
+1000     0.5106         0.6312         1.236
+5000     7.1973         9.4719         1.316
+10000    23.2569        30.4779        1.310
+```
+
+结论：
+
+- **1 线程：** 5000/10000 只 boid 时 ekit 快约 15-18%，原因是稀疏集密集数组和直接查询分发降低了逐实体迭代开销。
+- **4 线程：** 5000/10000 只 boid 时 EnTT 快约 30%。它按实体分块的 `parallel_for` 比 ekit 的系统级并行扩展性更好；后者还需要在每步承担线程池同步与依赖分析开销。
+- 2-3 线程时两者基本相当。
+- 空间网格中的每个单元都按实体 ID 排序，使两种实现的邻居累加顺序一致，并保持位级确定性。
+
 ## 算法
 
 每一帧中，每只 boid 都会根据邻居计算以下规则并调整运动方向：
