@@ -1,0 +1,42 @@
+# Changelog
+
+All notable changes to ekit are documented in this file.
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.1.0] - 2026-08-12
+
+First public release.
+
+### Added
+
+- **Core ECS**
+  - Strong-typed, generation-based `Entity` handle (`Entity::Null`, `IsAlive`, automatic slot recycling with generation bumps).
+  - Explicit component declaration via `EKIT_COMPONENT(T)` and registration via `world.RegisterComponent<T>()`; undeclared/unregistered usage produces readable compile-time or runtime errors.
+  - Sparse-set `ComponentStorage<T>` (cache-friendly dense arrays, swap-and-pop removal).
+- **World** - entity create/destroy, component `Add / Emplace / Set / Get / TryGet / Has / Remove / Patch / Clear`, named entities, batch registration, `ClearAll`.
+- **Query** - fluent `Query<Ts...>()` with `Where / With / Without / Optional / ForEach / Each / Count`, composed entirely at compile time (no type erasure, no per-entity virtual calls); iterates the smallest matching storage.
+- **System & Scheduler** - systems declare `Reads / Writes` in-class; the scheduler builds a dependency DAG and runs independent systems in parallel on an internal thread pool. Two writers of the same component are serialized in registration order; a cycle is reported only for genuine dependency contradictions.
+- **Event** - `world.Subscribe<T>(handler)` / `world.Emit<T>(args...)` with stable subscription handles (safe to unsubscribe from inside a callback).
+- **Boids case study** (`examples/boids/`) - a complete flocking simulation on ekit:
+  - GLFW + OpenGL live viewer (mouse-follow flock, window-following world, SPACE / R / arrows / ESC controls).
+  - Headless PPM renderer + `render.ps1` (PNG / animated GIF, with optional frame/FPS stamping).
+  - `ekit_boids_bench` (boid-count x thread-count matrix) and `ekit_entt_compare` (same algorithm on EnTT v4, bit-identical state).
+  - 10,000-boid recordings with runtime-FPS labels.
+- **Benchmarks** (`benchmarks/`) - test conditions, raw data (txt/csv), charts, `analyze.py`, and analysis of the decline curve (super-linear per-step cost, exponent ~1.5-1.8) and the parallel stall point (speedup plateaus at 4 threads); EN + zh-CN docs.
+- Unit tests (33 cases / 268 assertions) and a README in English and Simplified Chinese.
+
+### Changed
+
+- `EKIT_COMPONENT(T)` is now an in-class marker, so components can be declared in any namespace (previously the namespace-scope specialization failed outside the global namespace).
+
+### Fixed
+
+- Entity slot liveness: destroyed slots were reported as alive by `ForEachEntity` / `GetEntity` / `IsAlive`; now tracked by an explicit liveness flag.
+- Scheduler: two writers of the same component no longer form a dependency cycle (serialized by registration order instead).
+- Boids spatial grid sorts each cell by entity id so neighbor accumulation (and therefore the whole simulation) is fully deterministic.
+
+[Unreleased]: https://github.com/chnnasn/ekit/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/chnnasn/ekit/releases/tag/v0.1.0
