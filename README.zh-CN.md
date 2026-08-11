@@ -173,6 +173,30 @@ cmake --build build --config Release
 ctest --test-dir build -C Release
 ```
 
+## 单元测试
+
+`tests/tests.cpp` 随库一起发布，通过 `ctest` 运行：**34 个测试用例 / 269 项断言，全部通过**。覆盖范围：
+
+| 领域 | 用例数 |
+| --- | --- |
+| 实体 - 世代编号、失效句柄安全、槽位回收、世代溢出 | 5 |
+| 组件 - 注册、增删改查、错误路径、清除 | 6 |
+| 查询 - ForEach、Where、With/Without/Optional、const 引用 | 5 |
+| 命名实体 | 1 |
+| 事件 - 订阅/派发、回调中退订 | 3 |
+| 系统与调度器 - 依赖排序、并行、双写串行、真实环检测 | 6 |
+| 组件声明 - 特性、手动特化 | 2 |
+| 回归 - 销毁后遍历、空闲槽访问、遍历中改组件、世代溢出、自退订、任务异常后调度器恢复 | 6 |
+| **合计** | **34 / 269** |
+
+运行方式：
+
+```bash
+cmake -S . -B build
+cmake --build build --config Release --target ekit_tests
+./build/Release/ekit_tests.exe        # 或 ctest --test-dir build -C Release
+```
+
 ## 项目结构
 
 ```
@@ -194,7 +218,7 @@ include/ekit/
 - [x] 系统 `Reads/Writes` + 并行 Scheduler
 - [x] 事件系统（`Subscribe` / `Emit`）
 - [ ] Archetype 分块（SoA）作为下一层存储
-- [ ] 单元测试 / 与 `entt` 对比基准
+- [x] 单元测试 + 与 `entt` 对比基准
 - [ ] CMake 包配置（`find_package(ekit)`）
 
 ## 许可证

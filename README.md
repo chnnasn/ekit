@@ -207,6 +207,31 @@ cmake --build build --config Release
 ctest --test-dir build -C Release
 ```
 
+## Unit tests
+
+`tests/tests.cpp` ships with the library and is run via `ctest`:
+**34 test cases / 269 assertions, all passing.** Coverage:
+
+| area | tests |
+| --- | --- |
+| Entity - generation, stale-handle safety, slot recycling, generation overflow | 5 |
+| Components - registration, CRUD, error paths, clear | 6 |
+| Queries - ForEach, Where, With/Without/Optional, const refs | 5 |
+| Named entities | 1 |
+| Events - subscribe/emit, unsubscribe during emit | 3 |
+| Systems & Scheduler - dependency ordering, parallelism, writer serialization, genuine-cycle detection | 6 |
+| Component declarations - traits, manual specialization | 2 |
+| Regression - destroy-then-iterate, free-slot access, mutation during iteration, generation overflow, self-unsubscribe, scheduler recovery after a task exception | 6 |
+| **Total** | **34 / 269** |
+
+Run them with:
+
+```bash
+cmake -S . -B build
+cmake --build build --config Release --target ekit_tests
+./build/Release/ekit_tests.exe        # or: ctest --test-dir build -C Release
+```
+
 ## Project layout
 
 ```
@@ -228,7 +253,7 @@ include/ekit/
 - [x] System `Reads/Writes` + parallel Scheduler
 - [x] Event system (`Subscribe` / `Emit`)
 - [ ] Archetype chunks (SoA) as the next storage tier
-- [ ] Unit-test / benchmark vs `entt`
+- [x] Unit tests + benchmark vs `entt`
 - [ ] CMake package config (`find_package(ekit)`)
 
 ## License
