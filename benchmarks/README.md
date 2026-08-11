@@ -52,13 +52,13 @@ ekit vs EnTT comparison. Generated on **2026-08-11**.
 | `ekit_boids_bench.csv` | same data, machine readable |
 | `entt_vs_ekit_raw.txt` | raw console output of the ekit vs EnTT comparison |
 | `chart_cost_vs_boids.png` | ms/step vs boid count (log-log) |
-| `chart_speedup_vs_threads.png` | speedup vs threads (stall point) |
+| `chart_speedup_vs_threads.png` | speedup vs thread count |
 | `chart_throughput.png` | throughput (k boids/s) vs boid count |
 | `analyze.py` | script that parses the raw data and regenerates the CSV/charts |
 
 ## Analysis
 
-### The decline curve: per-step cost vs boid count (super-linear)
+### Per-step cost vs boid count
 
 Measured at 4 threads (ms/step):
 
@@ -77,7 +77,7 @@ neighbors per boid*; the neighbor search is O(n x neighbors), i.e. O(n^2) in
 the uniform-density limit. The curve is a decline of throughput: 200 boids run
 at ~2.7M boids/s (4 threads) but only ~285k boids/s at 10000.
 
-### The stall point: parallel speedup plateaus at 4 threads
+### Parallel scaling by thread count
 
 | boids | t2 | t4 | t24 |
 | --- | --- | --- | --- |
@@ -85,19 +85,19 @@ at ~2.7M boids/s (4 threads) but only ~285k boids/s at 10000.
 | 1000 | 1.62x | 2.41x | 2.28x |
 | 10000 | 1.69x | 2.23x | 2.44x |
 
-Speedup stops improving at **4 threads**; 24 threads gains nothing. This is the
-structural ceiling of the workload: the dependency graph has exactly 4
-parallel rule systems in phase 1, and the spatial grid rebuild plus the
-2-system phase-2 chain are serial. The measured ceiling is ~2.2-2.9x, not 4x,
-because of that serial work plus load imbalance among the 4 rules (alignment /
-cohesion scan far more neighbors than separation).
+In these measurements, speedup changes little beyond **4 threads**. The
+dependency graph has 4 parallel rule systems in phase 1, while the spatial grid
+rebuild and the 2-system phase-2 chain are serial. The observed range of
+~2.2-2.9x is consistent with that serial work and load imbalance among the 4
+rules (alignment and cohesion scan more neighbors than separation).
 
 ### ekit vs EnTT (same algorithm, EnTT v4)
 
-- 1 thread: ekit ~15-25% faster (leaner dense-array query iteration).
-- 4 threads: EnTT ~25-30% faster (entity-chunked `parallel_for` scales each
-  pass ~4x; ekit's scheduler parallelizes whole systems, limited by the
-  slowest rule and per-step scheduler overhead).
+- 1 thread: ekit measures ~15-25% faster. One possible contributor is its
+  dense-array query iteration.
+- 4 threads: EnTT measures ~25-30% faster. Its entity-chunked `parallel_for`
+  distributes each pass across workers, while ekit's scheduler parallelizes
+  whole systems and includes per-step scheduling overhead.
 
 ## Reproduce
 

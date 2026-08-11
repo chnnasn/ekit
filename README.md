@@ -2,16 +2,14 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-**Ekit** is a friendly, header-only, **C++20 ECS** (Entity-Component-System) library
-for game engines. Most ECS libraries fall into two camps: powerful but hard to use
-(deep template metaprogramming, cryptic compile errors), or simple but slow. Ekit is
-designed to escape that trade-off - sparse-set performance with an API that reads like
-C# LINQ + Unity DOTS: explicit, fluent, and zero-overhead. So you spend your time on
-game logic, not plumbing.
+**Ekit** is a header-only **C++20 ECS** (Entity-Component-System) library for game
+engines. It combines sparse-set storage with an explicit, fluent API influenced by
+C# LINQ and Unity DOTS. The project focuses on keeping common ECS operations readable
+while avoiding type erasure and per-entity virtual dispatch in query iteration.
 
-[EnTT](https://github.com/skypjack/entt) is a battle-tested, feature-rich ECS library.
-Ekit is a smaller, deliberately ergonomic alternative focused on a friendly API and a
-lean feature set - pick whichever fits your project.
+[EnTT](https://github.com/skypjack/entt) is a mature, feature-rich ECS library. Ekit is
+smaller and covers a narrower feature set, with more emphasis on explicit registration
+and fluent queries. The appropriate choice depends on the requirements of the project.
 
 ## Design philosophy
 
@@ -26,16 +24,16 @@ lean feature set - pick whichever fits your project.
    - PascalCase methods: `world.Create()`, `world.Query<Ts...>().ForEach(...)`.
    - Systems are classes with an `Execute(World&)` method, like Unity DOTS.
 
-3. **Extremely caller-friendly**
+3. **Readable diagnostics and typed interfaces**
    - No template error storms: `static_assert` and `if constexpr` produce precise errors.
    - Entities are strong-typed, generation-based handles (never bare `uint32_t`).
-   - Zero-overhead: the fluent query chain is composed at compile time (no type erasure,
-     no per-entity virtual calls).
+   - The fluent query chain is composed at compile time, without type erasure or
+     per-entity virtual calls.
 
-4. **Architecture cornerstone**
+4. **Core architecture**
    - Sparse-set storage, a dependency-aware parallel scheduler, named entities, and an
-     event system provide a solid base for declarative auto-parallelization, editor
-     integration, and network sync.
+     event system provide building blocks for declarative auto-parallelization, editor
+     integration, and network synchronization.
 
 ## Quick start
 
@@ -139,10 +137,10 @@ Requires C++20 (MSVC 19.29+, GCC 11+, Clang 14+).
 
 ## Case study: Boids
 
-`examples/boids/` is a complete flocking simulation built on ekit. It showcases
+`examples/boids/` is a flocking simulation built on ekit. It demonstrates
 explicit component registration, fluent queries, systems with `Reads/Writes`
 declarations, the parallel scheduler (four boid-rule systems run concurrently),
-spatial-hash neighbor queries, and a classic two-phase frame pipeline:
+spatial-hash neighbor queries, and a two-phase frame pipeline:
 
 ```bash
 # Real-time window (GLFW + OpenGL, GPU rendering). GLFW is NOT part of this
@@ -165,7 +163,7 @@ Full conditions, raw data and the analysis scripts live in
 [`benchmarks/`](benchmarks/README.md). Headline results (Intel i7-14650HX, 24
 threads, MSVC Release /O2, world 800x600, seed 20260810):
 
-### The decline curve: per-step cost grows super-linearly with boid count
+### Per-step cost as boid count increases
 
 | from | to | x boids | x time | exponent |
 | --- | --- | --- | --- | --- |
@@ -181,24 +179,25 @@ i.e. O(n^2) in the uniform-density limit. Throughput falls from ~2.7M boids/s
 
 ![per-step cost vs boids](benchmarks/chart_cost_vs_boids.png)
 
-### The stall point: parallel speedup plateaus at 4 threads
+### Parallel scaling by thread count
 
 | boids | t2 | t4 | t24 |
 | --- | --- | --- | --- |
 | 200 | 1.32x | 1.94x | 1.96x |
 | 10000 | 1.69x | 2.23x | 2.44x |
 
-Speedup stops improving at **4 threads** (24 threads gains nothing): the
-dependency graph has exactly 4 parallel rule systems, and the grid rebuild plus
-the phase-2 chain are serial - a structural ceiling of ~2.2-2.9x, not 4x.
+In these measurements, speedup changes little beyond **4 threads**. The dependency
+graph has 4 parallel rule systems, while the grid rebuild and phase-2 chain are
+serial; the observed speedup is therefore ~2.2-2.9x rather than 4x.
 
 ![speedup vs threads](benchmarks/chart_speedup_vs_threads.png)
 
 ### ekit vs EnTT (same algorithm, EnTT v4)
 
-ekit is ~15-25% faster single-threaded (leaner query iteration); EnTT is
-~25-30% faster at 4 threads (entity-chunked `parallel_for` vs ekit's
-system-granularity scheduler). Both produce bit-identical simulation state.
+In this benchmark, ekit measures ~15-25% faster with one thread, while EnTT
+measures ~25-30% faster with four threads. The difference is consistent with
+their query iteration and parallelization strategies. Both implementations
+produce bit-identical simulation state for the tested workload.
 
 ## Building & testing
 

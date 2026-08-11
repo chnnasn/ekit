@@ -2,8 +2,8 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-A complete implementation of the classic Boids flocking algorithm (Craig Reynolds)
-built on **ekit**, serving as a full case study for the library. It demonstrates
+An implementation of Craig Reynolds' Boids flocking algorithm built on **ekit**,
+serving as a case study for the library. It demonstrates
 ekit's core capabilities: **explicit component registration, fluent queries,
 declarative `Reads/Writes` system dependencies, automatic parallel scheduling**,
 plus a spatial hash grid for neighbor queries.
@@ -93,12 +93,11 @@ threads = 4
 
 Takeaways:
 
-- **1 thread: ekit is ~15-18% faster** at 5000/10000 boids - lower per-entity
-  iteration overhead (sparse-set dense arrays, direct query dispatch).
-- **4 threads: EnTT is ~30% faster** at 5000/10000 boids - its chunked
-  `parallel_for` over entities scales better than ekit's scheduler, which
-  parallelizes at the granularity of whole systems (4 rule systems) and pays
-  pool-sync + dependency-analysis overhead per step.
+- **1 thread:** ekit measures ~15-18% faster at 5000/10000 boids. Its sparse-set
+  dense arrays and direct query dispatch may contribute to the difference.
+- **4 threads:** EnTT measures ~30% faster at 5000/10000 boids. Its chunked
+  `parallel_for` distributes entities across workers, while ekit parallelizes
+  whole systems and performs pool synchronization and dependency analysis per step.
 - At 2-3 threads the two are essentially equal.
 - The spatial grid sorts each cell by entity id so neighbor accumulation is
   order-independent and bit-deterministic on both sides.
@@ -130,7 +129,7 @@ to the velocity, and an integrate system advances the position.
 
 ## How the scheduler works: two phases
 
-Each frame is split into **two scheduler phases** (a classic frame-pipeline pattern):
+Each frame is split into **two scheduler phases**:
 
 ```
 Phase 1 (rules, fully parallel)
@@ -163,7 +162,7 @@ acyclic. This is a common frame-pipeline constraint in real ECS engines.
 > The spatial grid is rebuilt **synchronously** at the start of each frame and is
 > read-only during the scheduler phase, so the parallel rule systems are race-free.
 
-## Real-time viewer (recommended)
+## Real-time viewer
 
 **`ekit_boids_live`** opens a real-time window using **GLFW + OpenGL** (GPU
 rendering; hundreds of FPS with `--vsync 0`, or locked to the monitor refresh rate
@@ -295,7 +294,7 @@ Key takeaways:
 - **Parallel speedup plateaus around 2.3x at 4 threads.** The dependency graph has
   exactly 4 parallel rule systems in phase 1, and the spatial grid rebuild plus
   the 2-system phase 2 are serial, so more than ~4 worker threads cannot help.
-  This is the expected ceiling for this workload, not a scheduler limitation.
+  This result is consistent with the amount of serial work in this workload.
 - **Per-step cost grows super-linearly with boid count** in a fixed-size world:
   doubling the boids doubles the density, so every boid finds more neighbors in
   its radius (neighbor queries are O(n * avg-neighbors)).
