@@ -218,21 +218,22 @@ See [examples/boids/README.md](examples/boids/README.md) for details.
 
 Full conditions, raw data and the analysis scripts live in
 [`benchmarks/`](benchmarks/README.md). Headline results (Intel i7-14650HX, 24
-threads, MSVC Release /O2, world 800x600, seed 20260810):
+threads, MSVC Release /O2, world 800x600, seed 20260810, 120 timed steps + 20
+warmup):
 
 ### Per-step cost as boid count increases
 
 | from | to | x boids | x time | exponent |
 | --- | --- | --- | --- | --- |
-| 200 | 500 | 2.5x | 4.05x | 1.53 |
-| 1000 | 2000 | 2.0x | 3.07x | 1.62 |
-| 5000 | 10000 | 2.0x | 3.41x | 1.77 |
+| 200 | 500 | 2.5x | 4.82x | 1.72 |
+| 1000 | 2000 | 2.0x | 3.14x | 1.65 |
+| 5000 | 10000 | 2.0x | 3.26x | 1.71 |
 
-Per-step cost scales as n^1.5..n^1.8 and the exponent **rises toward 2 with
+Per-step cost scales as n^1.5..n^1.7 and the exponent **rises toward 2 with
 density**: the world is fixed, so doubling the boids doubles the density and
 the number of neighbors per boid - the neighbor search is O(n x neighbors),
-i.e. O(n^2) in the uniform-density limit. Throughput falls from ~2.7M boids/s
-(200 boids) to ~285k boids/s (10000 boids).
+i.e. O(n^2) in the uniform-density limit. Throughput falls from ~2.65M boids/s
+(200 boids) to ~238k boids/s (10000 boids).
 
 ![per-step cost vs boids](benchmarks/chart_cost_vs_boids.png)
 
@@ -240,31 +241,22 @@ i.e. O(n^2) in the uniform-density limit. Throughput falls from ~2.7M boids/s
 
 | boids | t2 | t4 | t24 |
 | --- | --- | --- | --- |
-| 200 | 1.32x | 1.94x | 1.96x |
-| 10000 | 1.69x | 2.23x | 2.44x |
+| 200 | 1.26x | 1.97x | 1.92x |
+| 10000 | 1.69x | 2.50x | 2.51x |
 
 In these measurements, speedup changes little beyond **4 threads**. The dependency
 graph has 4 parallel rule systems, while the grid rebuild and phase-2 chain are
-serial; the observed speedup is therefore ~2.2-2.9x rather than 4x.
+serial; the observed speedup is therefore ~2.0-2.5x rather than 4x.
 
 ![speedup vs threads](benchmarks/chart_speedup_vs_threads.png)
 
 ### ekit vs EnTT (same algorithm, EnTT v4)
 
-In the scheduler-based benchmark, ekit measures ~15-25% faster with one thread,
-while EnTT measures ~25-30% faster with four threads. The difference is
-consistent with their query iteration and parallelization strategies. Both
-implementations produce bit-identical simulation state for the tested workload.
-
-The data-parallel path changes the multi-core picture. On Apple Silicon (14
-threads, clang 21, -O2), `ekit_boids_bench_parallel` measures ~7.3-8.7x over
-the single-threaded ekit baseline at 5000-10000 boids, while the scheduler path
-stays ~2.2-2.3x. With the EnTT side switched to the same dynamic-chunking
-parallel loop AND the same storage-driven component access (dense-array drive +
-per-component sparse lookup, identical component set), data-parallel ekit is
-~22-31% faster than EnTT v4 at 5000-10000 boids across 1/4/14 threads
-(`ekit-dp/entt` ~0.69-0.75), narrowing to ~5-16% at 1000 boids.
-
+On this Windows/MSVC build, the ekit scheduler is ~20% slower than EnTT at 1
+thread and ~1.7-1.9x slower at 4 threads on dense workloads. The controlled
+data-parallel path `ekit-dp` (same chunking, same storage access, same component
+set) narrows the gap to ~1.1-1.13x at 4 threads. Both implementations produce
+bit-identical simulation state for the tested workload.
 ## Building & testing
 
 ```bash
