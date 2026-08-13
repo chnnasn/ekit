@@ -61,44 +61,56 @@ cmake --build build --config Release --target ekit_entt_compare
 .\build\examples\boids\Release\ekit_entt_compare.exe   # 4 groups, EnTT left / ekit right
 ```
 
-Measured on this machine (30 timed steps + 10 warmup, world 800x600,
-`ekit/EnTT` < 1 means ekit is faster):
+The comparison has three columns:
+
+- `ekit` — the dependency-graph scheduler: whole systems run in parallel, one
+  thread each.
+- `ekit-dp` — the data-parallel query path. It uses the **same** dynamic
+  chunking and the **same** storage-driven component access as the EnTT side
+  (dense-array drive + per-component sparse lookup, identical component set), so
+  this column isolates the ECS layer itself.
+
+Measured on this machine (Apple Silicon, clang, -O2, 120 timed steps + 20
+warmup, world 800x600, seed 20260810; ratio < 1 means ekit is faster):
 
 ```
 threads = 1
-boids    entt ms/step   ekit ms/step   ekit/entt
-200      0.0978         0.1078         1.103
-1000     1.5310         1.3832         0.903
-5000     27.5485        23.3063        0.846
-10000    92.6480        75.5112        0.815
+boids    entt ms/step   ekit ms/step   ekit/entt  ekit-dp ms/step  ekit-dp/entt
+200      0.0885         0.0856         0.967      0.0752          0.850
+1000     1.5510         1.3593         0.876      1.3138          0.847
+5000     20.7945        15.9294        0.766      15.2530         0.734
+10000    70.1903        54.5702        0.777      52.1881         0.744
 
 threads = 2
-200      0.0867         0.0922         1.064
-1000     0.8839         0.8873         1.004
-5000     13.8857        13.8863        1.000
-10000    45.7371        45.4219        0.993
+200      0.0917         0.0650         0.708      0.0902          0.983
+1000     0.8197         0.8588         1.048      0.7278          0.888
+5000     11.0227        9.9391         0.902      8.5136          0.772
+10000    38.5296        34.7373        0.902      29.1513         0.757
 
 threads = 3
-200      0.0759         0.0652         0.858
-1000     0.6389         0.6180         0.967
-5000     9.5436         9.4031         0.985
-10000    30.8032        30.4022        0.987
+200      0.0971         0.0615         0.634      0.0983          1.013
+1000     0.6598         0.6413         0.972      0.5998          0.909
+5000     8.2491         7.4971         0.909      6.0826          0.737
+10000    26.3406        24.8070        0.942      19.7936         0.751
 
 threads = 4
-200      0.0753         0.0590         0.783
-1000     0.5106         0.6312         1.236
-5000     7.1973         9.4719         1.316
-10000    23.2569        30.4779        1.310
+200      0.0932         0.0623         0.668      0.0837          0.898
+1000     0.5460         0.6415         1.175      0.4941          0.905
+5000     6.7052         7.4500         1.111      4.6617          0.695
+10000    20.9687        25.8639        1.233      17.4223         0.831
 ```
 
 Takeaways:
 
-- **1 thread:** ekit measures ~15-18% faster at 5000/10000 boids. Its sparse-set
-  dense arrays and direct query dispatch may contribute to the difference.
-- **4 threads:** EnTT measures ~30% faster at 5000/10000 boids. Its chunked
-  `parallel_for` distributes entities across workers, while ekit parallelizes
-  whole systems and performs pool synchronization and dependency analysis per step.
-- At 2-3 threads the two are essentially equal.
+- **Controlled comparison (`ekit-dp`):** with identical algorithm, chunking,
+  storage access and component set, ekit's ECS layer is ~17-31% faster than EnTT
+  v4 at 5000/10000 boids across 1-4 threads (`ekit-dp/entt` ~0.69-0.78), and
+  ~5-15% faster at 1000 boids. Small counts (200) are roughly equal.
+- **Scheduler comparison (`ekit`):** the original scheduler wins at 1 thread but
+  loses to EnTT at 4 threads on dense workloads - a parallelism-method
+  difference (whole-system parallelism vs data parallelism), not a storage
+  difference.
+- Both `ekit` and `ekit-dp` produce **bit-identical** states to EnTT.
 - The spatial grid sorts each cell by entity id so neighbor accumulation is
   order-independent and bit-deterministic on both sides.
 

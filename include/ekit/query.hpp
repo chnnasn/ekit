@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 // ekit - query.hpp
 //
 // Fluent, LINQ/Unity-DOTS style queries:
@@ -23,6 +23,7 @@
 #include "core.hpp"
 #include "entity.hpp"
 #include "component.hpp"
+#include "parallel.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -89,6 +90,12 @@ struct IterateWithDriver<WorldT, TypeList<Ts...>> {
         return m;
     }
 
+    // Runs fn over only the [begin, end) slice of the chosen driver storage.
+    template<typename F>
+    static void RunParallel(WorldT* world, std::size_t begin, std::size_t end, F& f) {
+        IterateImplParallel(world, MinSize(world), begin, end, f, TypeList<Ts...>{});
+    }
+
     template<typename F, typename Driver, typename... Rest>
     static void IterateImpl(WorldT* world, std::size_t min_size, F& f, TypeList<Driver, Rest...>) {
         auto& storage = world->template GetStorage<Driver>();
@@ -101,6 +108,22 @@ struct IterateWithDriver<WorldT, TypeList<Ts...>> {
         } else {
             if constexpr (sizeof...(Rest) > 0) {
                 IterateImpl(world, min_size, f, TypeList<Rest...>{});
+            }
+        }
+    }
+
+    template<typename F, typename Driver, typename... Rest>
+    static void IterateImplParallel(WorldT* world, std::size_t min_size, std::size_t begin,
+                                    std::size_t end, F& f, TypeList<Driver, Rest...>) {
+        auto& storage = world->template GetStorage<Driver>();
+        if (storage.Size() == min_size) {
+            for (std::size_t i = begin; i < end; ++i) {
+                const Entity e = world->GetEntity(storage.EntityAt(i));
+                f(e);
+            }
+        } else {
+            if constexpr (sizeof...(Rest) > 0) {
+                IterateImplParallel(world, min_size, begin, end, f, TypeList<Rest...>{});
             }
         }
     }
@@ -221,6 +244,37 @@ public:
     void ForEach(F&& func) const {
         Visit([&](Entity e) {
             detail::InvokeCallable(func, world_, e, RequiredList{}, OptionalList{});
+        });
+    }
+
+    // Like ForEach but splits the driver storage into chunks and runs them
+    // concurrently on the supplied thread pool. The callback (and any Where
+    // predicate) must be safe to invoke from multiple threads; in practice it
+    // should only touch the entity's own components (no shared mutable state).
+    template<typename F>
+    void ForEachParallel(ThreadPool& pool, F&& func) const {
+        const std::size_t count =
+            detail::IterateWithDriver<WorldT, RequiredList>::MinSize(world_);
+        if (count == 0) {
+            return;
+        }
+        auto visit = [&](Entity e) {
+            if (!detail::AllPresent<RequiredList>::Check(world_, e)) {
+                return;
+            }
+            if (detail::AnyPresent<ExcludedList>::Check(world_, e)) {
+                return;
+            }
+            if constexpr (!std::is_same_v<PredicateT, detail::EmptyPredicate>) {
+                if (!detail::InvokeCallable(predicate_, world_, e, RequiredList{}, OptionalList{})) {
+                    return;
+                }
+            }
+            detail::InvokeCallable(func, world_, e, RequiredList{}, OptionalList{});
+        };
+        detail::ParallelFor(pool, count, [&](std::size_t begin, std::size_t end) {
+            detail::IterateWithDriver<WorldT, RequiredList>::RunParallel(
+                world_, begin, end, visit);
         });
     }
 

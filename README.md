@@ -94,6 +94,15 @@ int main() {
   ```
   Required components are passed by reference; optional components as pointers
   (`nullptr` when absent); the `Entity` handle is optional and comes first.
+- **Data-parallel query & thread pool** — `ekit::ThreadPool` plus
+  `Query::ForEachParallel(pool, fn)` split the smallest storage into chunks and run
+  them concurrently (dynamic atomic work stealing, so per-entity cost stays balanced).
+  The callback must only touch the entity's own components:
+  ```cpp
+  ekit::ThreadPool pool(0);                 // 0 == hardware concurrency
+  world.Query<Position, Velocity>()
+       .ForEachParallel(pool, [](Position& p, Velocity& v) { p.x += v.vx; });
+  ```
 - **System & Scheduler** — systems declare `Reads` / `Writes`; the scheduler builds a
   dependency DAG and executes independent systems in parallel on an internal thread pool:
   ```cpp
@@ -194,10 +203,19 @@ serial; the observed speedup is therefore ~2.2-2.9x rather than 4x.
 
 ### ekit vs EnTT (same algorithm, EnTT v4)
 
-In this benchmark, ekit measures ~15-25% faster with one thread, while EnTT
-measures ~25-30% faster with four threads. The difference is consistent with
-their query iteration and parallelization strategies. Both implementations
-produce bit-identical simulation state for the tested workload.
+In the scheduler-based benchmark, ekit measures ~15-25% faster with one thread,
+while EnTT measures ~25-30% faster with four threads. The difference is
+consistent with their query iteration and parallelization strategies. Both
+implementations produce bit-identical simulation state for the tested workload.
+
+The data-parallel path changes the multi-core picture. On Apple Silicon (14
+threads, clang 21, -O2), `ekit_boids_bench_parallel` measures ~7.3-8.7x over
+the single-threaded ekit baseline at 5000-10000 boids, while the scheduler path
+stays ~2.2-2.3x. With the EnTT side switched to the same dynamic-chunking
+parallel loop AND the same storage-driven component access (dense-array drive +
+per-component sparse lookup, identical component set), data-parallel ekit is
+~22-31% faster than EnTT v4 at 5000-10000 boids across 1/4/14 threads
+(`ekit-dp/entt` ~0.69-0.75), narrowing to ~5-16% at 1000 boids.
 
 ## Building & testing
 
@@ -210,19 +228,20 @@ ctest --test-dir build -C Release
 ## Unit tests
 
 `tests/tests.cpp` ships with the library and is run via `ctest`:
-**34 test cases / 269 assertions, all passing.** Coverage:
+**37 test cases / 272 assertions, all passing.** Coverage:
 
 | area | tests |
 | --- | --- |
 | Entity - generation, stale-handle safety, slot recycling, generation overflow | 5 |
 | Components - registration, CRUD, error paths, clear | 6 |
 | Queries - ForEach, Where, With/Without/Optional, const refs | 5 |
+| Parallel queries - ForEachParallel correctness, filters, deterministic writes | 3 |
 | Named entities | 1 |
 | Events - subscribe/emit, unsubscribe during emit | 3 |
 | Systems & Scheduler - dependency ordering, parallelism, writer serialization, genuine-cycle detection | 6 |
 | Component declarations - traits, manual specialization | 2 |
 | Regression - destroy-then-iterate, free-slot access, mutation during iteration, generation overflow, self-unsubscribe, scheduler recovery after a task exception | 6 |
-| **Total** | **34 / 269** |
+| **Total** | **37 / 272** |
 
 Run them with:
 
@@ -239,7 +258,8 @@ include/ekit/
   core.hpp        exceptions, TypeList, type ids
   entity.hpp      Entity (generation-based handle)
   component.hpp   EKIT_COMPONENT, ComponentStorage (sparse set)
-  query.hpp       fluent Query (Where / With / Without / Optional / ForEach)
+  query.hpp       fluent Query (Where / With / Without / Optional / ForEach / ForEachParallel)
+  parallel.hpp    reusable ThreadPool + chunked ParallelFor
   world.hpp       World, component CRUD, named entities, events
   system.hpp      system interface + Reads/Writes extraction
   scheduler.hpp   dependency-graph scheduler + thread pool

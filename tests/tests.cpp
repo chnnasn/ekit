@@ -1,4 +1,4 @@
-﻿// ekit test suite.
+// ekit test suite.
 #include <ekit/ekit.hpp>
 
 #include "test_framework.hpp"
@@ -876,6 +876,97 @@ TEST(regression_scheduler_recover_after_task_exception) {
     sched2.Run(world);
     CHECK_EQ(counts.load(), 3);
 }
+
+// ---------------------------------------------------------------------------
+// Parallel query (ForEachParallel)
+// ---------------------------------------------------------------------------
+
+TEST(query_foreach_parallel_matches_serial) {
+    ekit::World world;
+    world.RegisterComponents<Position, Velocity>();
+
+    for (int i = 0; i < 2000; ++i) {
+        ekit::Entity e = world.Create();
+        world.Add<Position>(e, static_cast<float>(i % 100), static_cast<float>(i / 100));
+        world.Add<Velocity>(e, 1.5f, 2.5f);
+    }
+
+    ekit::ThreadPool pool(4);
+
+    std::atomic<long long> parallel_sum{0};
+    world.Query<Position, Velocity>().ForEachParallel(
+        pool, [&](Position& p, Velocity& v) {
+            parallel_sum.fetch_add(static_cast<long long>(p.x + v.vx),
+                                   std::memory_order_relaxed);
+        });
+
+    long long serial_sum = 0;
+    world.Query<Position, Velocity>().ForEach(
+        [&](Position& p, Velocity& v) {
+            serial_sum += static_cast<long long>(p.x + v.vx);
+        });
+
+    CHECK_EQ(parallel_sum.load(), serial_sum);
+}
+
+TEST(query_foreach_parallel_respects_filters) {
+    ekit::World world;
+    world.RegisterComponents<Position, Velocity, Health, Tag>();
+
+    int with_tag = 0;
+    for (int i = 0; i < 1000; ++i) {
+        ekit::Entity e = world.Create();
+        world.Add<Position>(e, static_cast<float>(i), 0.f);
+        world.Add<Velocity>(e, 1.f, 0.f);
+        if (i % 2 == 0) {
+            world.Add<Tag>(e);
+            ++with_tag;
+        }
+    }
+
+    ekit::ThreadPool pool(4);
+
+    std::atomic<int> parallel_count{0};
+    world.Query<Position, Velocity>().With<Tag>().Without<Health>().ForEachParallel(
+        pool, [&](Position&, Velocity&, Tag&) {
+            parallel_count.fetch_add(1, std::memory_order_relaxed);
+        });
+
+    CHECK_EQ(parallel_count.load(), with_tag);
+}
+
+TEST(query_foreach_parallel_deterministic_write) {
+    auto build = [](ekit::World& world) {
+        world.RegisterComponents<Position, Velocity>();
+        for (int i = 0; i < 1000; ++i) {
+            ekit::Entity e = world.Create();
+            world.Add<Position>(e, static_cast<float>(i % 31), static_cast<float>(i % 17));
+            world.Add<Velocity>(e, 0.25f, 0.75f);
+        }
+    };
+
+    ekit::World serial_world;
+    ekit::World parallel_world;
+    build(serial_world);
+    build(parallel_world);
+
+    serial_world.Query<Position, Velocity>().ForEach(
+        [](Position& p, Velocity& v) { p.x += v.vx; p.y += v.vy; });
+
+    ekit::ThreadPool pool(4);
+    parallel_world.Query<Position, Velocity>().ForEachParallel(
+        pool, [](Position& p, Velocity& v) { p.x += v.vx; p.y += v.vy; });
+
+    bool same = true;
+    for (std::size_t i = 0; i < 1000; ++i) {
+        const ekit::Entity e = serial_world.GetEntity(static_cast<ekit::EntityId>(i + 1));
+        const Position& sp = serial_world.Get<Position>(e);
+        const Position& pp = parallel_world.Get<Position>(e);
+        same = same && (sp.x == pp.x) && (sp.y == pp.y);
+    }
+    CHECK(same);
+}
+
 
 // ---------------------------------------------------------------------------
 // main

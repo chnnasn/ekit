@@ -78,6 +78,14 @@ int main() {
        });
   ```
   必需组件以引用传入，可选组件以指针传入（不存在时为 `nullptr`）；`Entity` 句柄是可选参数，存在时必须位于首位。
+- **数据并行查询与线程池（Data-parallel Query & ThreadPool）**：`ekit::ThreadPool` 配合
+  `Query::ForEachParallel(pool, fn)` 把最小存储切分成多个分块并发执行（动态原子取块，负载均衡）。
+  回调只允许读写“当前实体自己的组件”：
+  ```cpp
+  ekit::ThreadPool pool(0);                 // 0 == 硬件并发数
+  world.Query<Position, Velocity>()
+       .ForEachParallel(pool, [](Position& p, Velocity& v) { p.x += v.vx; });
+  ```
 - **系统与调度器（System & Scheduler）**：系统声明 `Reads` / `Writes`；调度器构建依赖 DAG，并通过内部线程池并行执行相互独立的系统：
   ```cpp
   struct GravitySystem {
@@ -175,19 +183,20 @@ ctest --test-dir build -C Release
 
 ## 单元测试
 
-`tests/tests.cpp` 随库一起发布，通过 `ctest` 运行：**34 个测试用例 / 269 项断言，全部通过**。覆盖范围：
+`tests/tests.cpp` 随库一起发布，通过 `ctest` 运行：**37 个测试用例 / 272 项断言，全部通过**。覆盖范围：
 
 | 领域 | 用例数 |
 | --- | --- |
 | 实体 - 世代编号、失效句柄安全、槽位回收、世代溢出 | 5 |
 | 组件 - 注册、增删改查、错误路径、清除 | 6 |
 | 查询 - ForEach、Where、With/Without/Optional、const 引用 | 5 |
+| 并行查询 - ForEachParallel 正确性、过滤、确定性写入 | 3 |
 | 命名实体 | 1 |
 | 事件 - 订阅/派发、回调中退订 | 3 |
 | 系统与调度器 - 依赖排序、并行、双写串行、真实环检测 | 6 |
 | 组件声明 - 特性、手动特化 | 2 |
 | 回归 - 销毁后遍历、空闲槽访问、遍历中改组件、世代溢出、自退订、任务异常后调度器恢复 | 6 |
-| **合计** | **34 / 269** |
+| **合计** | **37 / 272** |
 
 运行方式：
 
@@ -204,7 +213,8 @@ include/ekit/
   core.hpp        异常、TypeList、类型 ID
   entity.hpp      Entity（带世代编号的句柄）
   component.hpp   EKIT_COMPONENT、ComponentStorage（稀疏集）
-  query.hpp       流畅 Query（Where / With / Without / Optional / ForEach）
+  query.hpp       流畅 Query（Where / With / Without / Optional / ForEach / ForEachParallel）
+  parallel.hpp    可复用 ThreadPool + 分块 ParallelFor
   world.hpp       World、组件 CRUD、命名实体、事件
   system.hpp      系统接口 + Reads/Writes 提取
   scheduler.hpp   依赖图调度器 + 线程池

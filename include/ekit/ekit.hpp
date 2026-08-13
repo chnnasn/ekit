@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 // ekit - unified entry point.
 //
 // #include <ekit/ekit.hpp>
@@ -8,6 +8,7 @@
 #include "ekit/core.hpp"
 #include "ekit/entity.hpp"
 #include "ekit/component.hpp"
+#include "ekit/parallel.hpp"
 #include "ekit/query.hpp"
 #include "ekit/world.hpp"
 #include "ekit/system.hpp"

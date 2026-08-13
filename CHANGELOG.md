@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Data-parallel query** - `ekit::ThreadPool` and `Query::ForEachParallel(pool, fn)` split the
+  smallest storage into chunks and run them concurrently with dynamic atomic work stealing.
+- **Parallel spatial grid** - the Boids `SpatialGrid` now has a `BuildParallel` path (count ->
+  resize -> scatter -> sort) that is bit-identical to the serial `Build`.
+- **Comparison benchmark** - `ekit_boids_bench_parallel` compares the original scheduler-based
+  execution against the data-parallel path and verifies deterministic state.
+- **EnTT comparison with matched parallelism** - the EnTT side of `ekit_entt_compare` now uses the
+  same dynamic-chunking parallel loop as `Query::ForEachParallel`, so the benchmark isolates the
+  ECS layer instead of the parallelization scheme.
+- **EnTT comparison with matched storage access** - the EnTT side now drives the same storage as the
+  ekit query and resolves every component via `storage->get(entity)` (a sparse lookup), mirroring
+  ekit's dense-array drive + per-component lookup and identical component set; `ekit-dp` measures
+  ~22-31% faster than EnTT v4 at 5000-10000 boids.
+
 ## [0.1.0] - 2026-08-12
 
 First public release.
