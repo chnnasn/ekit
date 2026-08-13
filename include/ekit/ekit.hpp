@@ -13,3 +13,4 @@
 #include "ekit/world.hpp"
 #include "ekit/system.hpp"
 #include "ekit/scheduler.hpp"
+#include "ekit/stream.hpp"

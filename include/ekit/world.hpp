@@ -1,11 +1,11 @@
-﻿#pragma once
+#pragma once
 // ekit - world.hpp
 //
 // World - the central ECS container.
 //
 //   ekit::World world;
-//   world.RegisterComponent<Position>();
-//   world.RegisterComponent<Velocity>();
+//   world.RegisterComponent<Position>();       // dense  (archetype, SoA)
+//   world.RegisterSparseComponent<Velocity>(); // sparse (random access / churn)
 //
 //   Entity e = world.Create("player");
 //   world.Add<Position>(e, 0.f, 0.f);
@@ -14,12 +14,13 @@
 //   world.Query<Position, Velocity>()
 //        .ForEach([](Entity e, Position& p, Velocity& v) { ... });
 //
+// Dense components live in archetypes (SoA columns -> fast iteration / batch /
+// SIMD); sparse components live in per-type sparse sets (fast random access and
+// cheap add/remove). Queries transparently mix the two.
+//
 // Events:
 //   world.Subscribe<CollisionEvent>(handler);   // returns EventSubscription
 //   world.Emit<CollisionEvent>(a, b);
-//
-// Explicit registration is mandatory: using an undeclared or unregistered
-// component produces a clear compile-time or runtime error instead of magic.
 
 #include "core.hpp"
 #include "entity.hpp"
@@ -28,6 +29,8 @@
 
 #include <any>
 #include <functional>
+#include <limits>
+#include <map>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -36,54 +39,41 @@
 
 namespace ekit {
 
+// Storage backend for a component type.
+enum class StorageKind { Dense, Sparse };
+
 class World;
 
 // ---------------------------------------------------------------------------
 // Event subscriptions
 // ---------------------------------------------------------------------------
 
-// Handle returned by world.Subscribe<T>(...). Use Unsubscribe() to remove the
-// handler. The subscription does NOT auto-unsubscribe on destruction; it is a
-// plain ticket you can keep or discard.
 class EventSubscription {
 public:
     EventSubscription() = default;
-
-    // Removes the handler from the world. Safe to call multiple times.
     void Unsubscribe();
-
     bool IsValid() const {
         return world_ != nullptr && index_ != detail::kNpos;
     }
-
 private:
     friend class World;
-
     EventSubscription(World* world, std::size_t event_id, std::size_t index)
         : world_(world), event_id_(event_id), index_(index) {}
-
     World* world_ = nullptr;
     std::size_t event_id_ = 0;
     std::size_t index_ = detail::kNpos;
 };
 
 namespace detail {
-
-// A single event handler slot. Dead slots keep their index so that
-// subscriptions remain stable even when handlers are unsubscribed.
 struct HandlerSlot {
     std::function<void(const void*)> fn;
     bool alive = true;
 };
-
-// True when T exposes Execute(World&). World is only forward-declared here;
-// the trait is instantiated once World is complete.
 template<typename T, typename = void>
 struct IsSystemLike : std::false_type {};
 template<typename T>
 struct IsSystemLike<T, std::void_t<decltype(std::declval<T&>().Execute(std::declval<World&>()))>>
     : std::true_type {};
-
 } // namespace detail
 
 // ---------------------------------------------------------------------------
@@ -95,7 +85,6 @@ class World {
 
 public:
     World() = default;
-
     World(const World&) = delete;
     World& operator=(const World&) = delete;
     World(World&&) = delete;
@@ -105,47 +94,29 @@ public:
     // Component registration (explicit, mandatory)
     // =====================================================================
 
-    // Registers T in this world and returns its ComponentTypeId. Idempotent.
-    // Unregistered types produce clear compile-time (EKIT_COMPONENT missing) or
-    // runtime (RegisterComponent missing) errors.
     template<typename T>
     ComponentTypeId RegisterComponent() {
-        static_assert(IsComponent<T>::value,
-                      "ekit: T is not declared as a component. Add 'EKIT_COMPONENT(T)' after "
-                      "declaring T, or specialize ekit::IsComponent<T>.");
-        static_assert(std::is_trivially_copyable_v<T>,
-                      "ekit: component types must be trivially copyable (POD-like).");
-        static_assert(std::is_default_constructible_v<T>,
-                      "ekit: component types must be default constructible.");
-
-        auto& id = ComponentTypeIdOf<T>;
-        if (id == kInvalidComponentTypeId) {
-            id = detail::NextComponentTypeId().fetch_add(1);
-        }
-        if (static_cast<std::size_t>(id) >= storages_.size()) {
-            storages_.resize(static_cast<std::size_t>(id) + 1);
-        }
-        if (!storages_[id]) {
-            storages_[id] = std::make_unique<ComponentStorage<T>>();
-            ++storage_count_;
-        }
-        return id;
+        return RegisterComponentImpl<T>(StorageKind::Dense);
     }
 
-    // Registers several components at once.
+    // Registers T in a per-type sparse set instead of the archetype storage.
+    template<typename T>
+    ComponentTypeId RegisterSparseComponent() {
+        return RegisterComponentImpl<T>(StorageKind::Sparse);
+    }
+
     template<typename... Ts>
     void RegisterComponents() {
         (RegisterComponent<Ts>(), ...);
     }
 
-    // Runtime id of a registered component. Throws when not registered.
     template<typename T>
     ComponentTypeId GetComponentTypeId() const {
         static_assert(IsComponent<T>::value,
                       "ekit: T is not declared as a component. Add 'EKIT_COMPONENT(T)'.");
         const auto id = ComponentTypeIdOf<T>;
-        if (id == kInvalidComponentTypeId || static_cast<std::size_t>(id) >= storages_.size() ||
-            !storages_[id]) {
+        if (id == kInvalidComponentTypeId || static_cast<std::size_t>(id) >= component_infos_.size() ||
+            component_infos_[id].size == 0) {
             throw EkitException("ekit: component '" + std::string(ComponentNameOf<T>()) +
                                 "' is not registered in this World. Call world.RegisterComponent<" +
                                 ComponentNameOf<T>() + ">() first.");
@@ -156,19 +127,30 @@ public:
     template<typename T>
     bool IsComponentRegistered() const {
         const auto id = ComponentTypeIdOf<T>;
-        return id != kInvalidComponentTypeId && static_cast<std::size_t>(id) < storages_.size() &&
-               storages_[id] != nullptr;
+        return id != kInvalidComponentTypeId && static_cast<std::size_t>(id) < component_infos_.size() &&
+               component_infos_[id].size != 0;
+    }
+
+    // Whether T is stored in a sparse set (true) or an archetype (false).
+    template<typename T>
+    bool IsSparseComponent() const {
+        const auto id = ComponentTypeIdOf<T>;
+        return id != kInvalidComponentTypeId && static_cast<std::size_t>(id) < component_kinds_.size() &&
+               component_kinds_[id] == StorageKind::Sparse;
     }
 
     std::size_t GetRegisteredComponentCount() const {
         return storage_count_;
     }
 
+    const ComponentInfo& GetComponentInfo(ComponentTypeId id) const {
+        return component_infos_[id];
+    }
+
     // =====================================================================
     // Entity creation / destruction
     // =====================================================================
 
-    // Creates a new entity.
     Entity Create() {
         EntityId index;
         EntityGeneration generation;
@@ -177,12 +159,12 @@ public:
             free_list_.pop_back();
             generation = entities_[index].GetGeneration();
             if (generation == 0) {
-                // Generation wrapped around: this slot can never be safely
-                // reused, so allocate a fresh one instead.
                 index = static_cast<EntityId>(entities_.size());
                 generation = 1;
                 entities_.emplace_back(index, generation);
                 alive_.push_back(1);
+                entity_archetype_.push_back(0);
+                entity_row_.push_back(0);
             } else {
                 entities_[index] = Entity(index, generation);
                 alive_[index] = 1;
@@ -192,20 +174,20 @@ public:
             generation = 1;
             entities_.emplace_back(index, generation);
             alive_.push_back(1);
+            entity_archetype_.push_back(0);
+            entity_row_.push_back(0);
         }
         ++alive_count_;
+        PlaceInArchetype(index, EmptyArchetypeId());
         return Entity(index, generation);
     }
 
-    // Creates a new entity with a debug/editor-facing name.
     Entity Create(std::string_view name) {
         Entity e = Create();
         SetName(e, name);
         return e;
     }
 
-    // Destroys an entity and all of its components. Invalid or stale handles
-    // are silently ignored (the entity is already gone).
     void Destroy(Entity e) {
         if (!IsAlive(e)) {
             return;
@@ -217,7 +199,8 @@ public:
             entity_to_name_.erase(it);
         }
 
-        for (auto& storage : storages_) {
+        EraseFromArchetype(entity_archetype_[index], entity_row_[index]);
+        for (auto& storage : sparse_storages_) {
             if (storage) {
                 storage->TryRemove(index);
             }
@@ -241,12 +224,10 @@ public:
         return alive_count_;
     }
 
-    // Alive entity currently stored at the given index, or Entity::Null.
     Entity GetEntity(EntityId index) const {
         return index < entities_.size() && alive_[index] != 0 ? entities_[index] : Entity::Null;
     }
 
-    // Iterates all currently alive entities.
     template<typename F>
     void ForEachEntity(F&& f) const {
         for (std::size_t i = 1; i < entities_.size(); ++i) {
@@ -257,7 +238,7 @@ public:
     }
 
     // =====================================================================
-    // Named entities (editor / debug integration)
+    // Named entities
     // =====================================================================
 
     void SetName(Entity e, std::string_view name) {
@@ -265,24 +246,17 @@ public:
             throw EkitException("ekit: cannot name a dead entity.");
         }
         const auto index = e.GetIndex();
-
-        // Remove the entity's previous name (if any).
         if (auto it = entity_to_name_.find(index); it != entity_to_name_.end()) {
             name_to_entity_.erase(it->second);
         }
-
         const std::string key(name);
-
-        // If another entity already owns this name, unname it (last one wins).
         if (auto it = name_to_entity_.find(key); it != name_to_entity_.end() && it->second != e) {
             entity_to_name_.erase(it->second.GetIndex());
         }
-
         name_to_entity_[key] = e;
         entity_to_name_[index] = key;
     }
 
-    // Name of the entity, or an empty string when unnamed.
     const std::string& GetName(Entity e) const {
         static const std::string kEmpty;
         if (auto it = entity_to_name_.find(e.GetIndex()); it != entity_to_name_.end()) {
@@ -291,7 +265,6 @@ public:
         return kEmpty;
     }
 
-    // Looks up an entity by name. Returns Entity::Null when not found.
     Entity Find(std::string_view name) const {
         if (auto it = name_to_entity_.find(std::string(name)); it != name_to_entity_.end()) {
             return it->second;
@@ -303,29 +276,42 @@ public:
     // Component access
     // =====================================================================
 
-    // Adds a component, constructing it in place. Throws if already present.
     template<typename T, typename... Args>
     T& Add(Entity e, Args&&... args) {
         RequireAlive(e);
-        return GetStorage<T>().Emplace(e.GetIndex(), std::forward<Args>(args)...);
+        const ComponentTypeId id = GetComponentTypeId<T>();
+        if (component_kinds_[id] == StorageKind::Sparse) {
+            return GetSparseStorage<T>().Emplace(e.GetIndex(), std::forward<Args>(args)...);
+        }
+        return AddDense<T>(e, id, std::forward<Args>(args)...);
     }
 
-    // Alias of Add (constructs in place, throws if already present).
     template<typename T, typename... Args>
     T& Emplace(Entity e, Args&&... args) {
         return Add<T>(e, std::forward<Args>(args)...);
     }
 
-    // Adds the component or replaces its value if it already exists.
     template<typename T, typename... Args>
     T& Set(Entity e, Args&&... args) {
         RequireAlive(e);
-        auto& storage = GetStorage<T>();
-        if (T* existing = storage.TryGet(e.GetIndex())) {
-            *existing = T(std::forward<Args>(args)...);
-            return *existing;
+        const ComponentTypeId id = GetComponentTypeId<T>();
+        if (component_kinds_[id] == StorageKind::Sparse) {
+            auto& storage = GetSparseStorage<T>();
+            if (T* existing = storage.TryGet(e.GetIndex())) {
+                *existing = T{std::forward<Args>(args)...};
+                return *existing;
+            }
+            return storage.Emplace(e.GetIndex(), std::forward<Args>(args)...);
         }
-        return storage.Emplace(e.GetIndex(), std::forward<Args>(args)...);
+        Archetype& a = *archetypes_[entity_archetype_[e.GetIndex()]];
+        const std::size_t row = entity_row_[e.GetIndex()];
+        const std::ptrdiff_t col = a.ColumnIndex(id);
+        if (col >= 0) {
+            T value{std::forward<Args>(args)...};
+            a.Write<T>(static_cast<std::size_t>(col), row, value);
+            return a.Column<T>(static_cast<std::size_t>(col))[row];
+        }
+        return AddDense<T>(e, id, std::forward<Args>(args)...);
     }
 
     template<typename T>
@@ -333,19 +319,41 @@ public:
         if (!IsAlive(e)) {
             return false;
         }
-        return GetStorage<T>().Contains(e.GetIndex());
+        const ComponentTypeId id = GetComponentTypeId<T>();
+        if (component_kinds_[id] == StorageKind::Sparse) {
+            return GetSparseStorage<T>().Contains(e.GetIndex());
+        }
+        return archetypes_[entity_archetype_[e.GetIndex()]]->ColumnIndex(id) >= 0;
     }
 
     template<typename T>
     T& Get(Entity e) {
         RequireAlive(e);
-        return GetStorage<T>().Get(e.GetIndex());
+        const ComponentTypeId id = GetComponentTypeId<T>();
+        if (component_kinds_[id] == StorageKind::Sparse) {
+            return GetSparseStorage<T>().Get(e.GetIndex());
+        }
+        Archetype& a = *archetypes_[entity_archetype_[e.GetIndex()]];
+        const std::ptrdiff_t col = a.ColumnIndex(id);
+        if (col < 0) {
+            throw EkitException("ekit: component is not present on this entity.");
+        }
+        return a.Column<T>(static_cast<std::size_t>(col))[entity_row_[e.GetIndex()]];
     }
 
     template<typename T>
     const T& Get(Entity e) const {
         RequireAlive(e);
-        return GetStorage<T>().Get(e.GetIndex());
+        const ComponentTypeId id = GetComponentTypeId<T>();
+        if (component_kinds_[id] == StorageKind::Sparse) {
+            return GetSparseStorage<T>().Get(e.GetIndex());
+        }
+        const Archetype& a = *archetypes_[entity_archetype_[e.GetIndex()]];
+        const std::ptrdiff_t col = a.ColumnIndex(id);
+        if (col < 0) {
+            throw EkitException("ekit: component is not present on this entity.");
+        }
+        return a.Column<T>(static_cast<std::size_t>(col))[entity_row_[e.GetIndex()]];
     }
 
     template<typename T>
@@ -353,7 +361,16 @@ public:
         if (!IsAlive(e)) {
             return nullptr;
         }
-        return GetStorage<T>().TryGet(e.GetIndex());
+        const ComponentTypeId id = GetComponentTypeId<T>();
+        if (component_kinds_[id] == StorageKind::Sparse) {
+            return GetSparseStorage<T>().TryGet(e.GetIndex());
+        }
+        Archetype& a = *archetypes_[entity_archetype_[e.GetIndex()]];
+        const std::ptrdiff_t col = a.ColumnIndex(id);
+        if (col < 0) {
+            return nullptr;
+        }
+        return &a.Column<T>(static_cast<std::size_t>(col))[entity_row_[e.GetIndex()]];
     }
 
     template<typename T>
@@ -361,7 +378,16 @@ public:
         if (!IsAlive(e)) {
             return nullptr;
         }
-        return GetStorage<T>().TryGet(e.GetIndex());
+        const ComponentTypeId id = GetComponentTypeId<T>();
+        if (component_kinds_[id] == StorageKind::Sparse) {
+            return GetSparseStorage<T>().TryGet(e.GetIndex());
+        }
+        const Archetype& a = *archetypes_[entity_archetype_[e.GetIndex()]];
+        const std::ptrdiff_t col = a.ColumnIndex(id);
+        if (col < 0) {
+            return nullptr;
+        }
+        return &a.Column<T>(static_cast<std::size_t>(col))[entity_row_[e.GetIndex()]];
     }
 
     template<typename T>
@@ -369,10 +395,13 @@ public:
         if (!IsAlive(e)) {
             return false;
         }
-        return GetStorage<T>().TryRemove(e.GetIndex());
+        const ComponentTypeId id = GetComponentTypeId<T>();
+        if (component_kinds_[id] == StorageKind::Sparse) {
+            return GetSparseStorage<T>().TryRemove(e.GetIndex());
+        }
+        return RemoveDense(e, id);
     }
 
-    // Applies fn to the component, e.g. world.Patch<Position>(e, [](Position& p) { p.x += 1.f; });
     template<typename T, typename F>
     void Patch(Entity e, F&& fn) {
         static_assert(std::is_invocable_v<F&, T&>,
@@ -380,24 +409,44 @@ public:
         fn(Get<T>(e));
     }
 
-    // Removes all instances of T. No-op when T is not registered.
     template<typename T>
     void ClearComponent() {
-        if (IsComponentRegistered<T>()) {
-            GetStorage<T>().Clear();
+        if (!IsComponentRegistered<T>()) {
+            return;
+        }
+        const ComponentTypeId id = GetComponentTypeId<T>();
+        if (component_kinds_[id] == StorageKind::Sparse) {
+            GetSparseStorage<T>().Clear();
+            return;
+        }
+        std::vector<EntityId> affected;
+        for (std::size_t aid = 0; aid < archetypes_.size(); ++aid) {
+            if (archetypes_[aid]->ColumnIndex(id) < 0) {
+                continue;
+            }
+            for (EntityId idx : archetypes_[aid]->entities) {
+                affected.push_back(idx);
+            }
+        }
+        for (EntityId idx : affected) {
+            RemoveDense(Entity(idx, entities_[idx].GetGeneration()), id);
         }
     }
 
-    // Destroys every entity and clears every component.
     void ClearAll() {
-        for (auto& storage : storages_) {
-            if (storage) {
-                storage->Clear();
+        for (auto& a : archetypes_) {
+            a->Clear();
+        }
+        for (auto& s : sparse_storages_) {
+            if (s) {
+                s->Clear();
             }
         }
         free_list_.clear();
         entities_.assign(1, Entity::Null);
         alive_.assign(1, 0);
+        entity_archetype_.assign(1, 0);
+        entity_row_.assign(1, 0);
         alive_count_ = 0;
         name_to_entity_.clear();
         entity_to_name_.clear();
@@ -407,20 +456,59 @@ public:
     // Queries
     // =====================================================================
 
-    // Builds a fluent query. Include <ekit/query.hpp> (or <ekit/ekit.hpp>).
     template<typename... Ts>
     auto Query() -> ekit::Query<World, detail::EmptyPredicate, TypeList<Ts...>,
-                          TypeList<>, TypeList<>> {
+                                TypeList<>, TypeList<>> {
         return ekit::Query<World, detail::EmptyPredicate, TypeList<Ts...>, TypeList<>,
-                     TypeList<>>(*this);
+                           TypeList<>>(*this);
+    }
+
+    // =====================================================================
+    // C#-style shortcuts
+    // ---------------------------------------------------------------------
+    // The fluent Query remains available for the full LINQ experience:
+    //   world.Query<Position, Velocity>().With<Tag>().ForEach(...)
+    // The shortcuts below cover the 90% case with a single call:
+    //   world.ForEach<Position, Velocity>(...)
+    //   world.Count<Position, Velocity>()
+    // =====================================================================
+
+    // Iterates every entity that has all of Ts..., passing component references
+    // (optional Entity handle first). Equivalent to Query<Ts...>().ForEach(fn).
+    template<typename... Ts, typename F>
+    void ForEach(F&& func) {
+        Query<Ts...>().ForEach(std::forward<F>(func));
+    }
+
+    // Parallel scalar iteration (chunked across the pool).
+    template<typename... Ts, typename F>
+    void ForEachParallel(ThreadPool& pool, F&& func) {
+        Query<Ts...>().ForEachParallel(pool, std::forward<F>(func));
+    }
+
+    // Dense-only SoA batch iteration. Ts... must all be dense components.
+    template<typename... Ts, typename F>
+    void ForEachBatch(F&& func,
+                      std::size_t batch_size = (std::numeric_limits<std::size_t>::max)()) {
+        Query<Ts...>().ForEachBatch(std::forward<F>(func), batch_size);
+    }
+
+    // Parallel dense-only SoA batch iteration.
+    template<typename... Ts, typename F>
+    void ForEachBatchParallel(ThreadPool& pool, F&& func, std::size_t batch_size = 256) {
+        Query<Ts...>().ForEachBatchParallel(pool, std::forward<F>(func), batch_size);
+    }
+
+    // Number of entities that have all of Ts....
+    template<typename... Ts>
+    std::size_t Count() {
+        return Query<Ts...>().Count();
     }
 
     // =====================================================================
     // Events
     // =====================================================================
 
-    // Subscribes a handler for event type T. The handler must be callable with
-    // (const T&). Returns a subscription that can be used to unsubscribe.
     template<typename T, typename F>
     EventSubscription Subscribe(F&& handler) {
         static_assert(std::is_invocable_v<F&, const T&>,
@@ -432,14 +520,12 @@ public:
         return EventSubscription(this, detail::TypeIdOf<T>(), slots.size() - 1);
     }
 
-    // Emits an event constructed from args, e.g. world.Emit<HitEvent>(damage, target);
     template<typename T, typename... Args>
     void Emit(Args&&... args) {
         T event(std::forward<Args>(args)...);
         EmitInternal(event);
     }
 
-    // Emits a ready-made event object, e.g. world.Emit(event);
     template<typename T>
     void Emit(const T& event) {
         EmitInternal(event);
@@ -449,7 +535,6 @@ public:
     // Systems
     // =====================================================================
 
-    // Runs a single system (a class with Execute(World&)) synchronously.
     template<typename T>
     void RunSystem(T&& system) {
         static_assert(detail::IsSystemLike<std::decay_t<T>>::value,
@@ -458,38 +543,184 @@ public:
     }
 
     // =====================================================================
-    // Storage access (used by queries and advanced users)
+    // Storage access (queries)
     // =====================================================================
 
+    const std::vector<std::unique_ptr<Archetype>>& Archetypes() const {
+        return archetypes_;
+    }
+
+    // Sparse storages indexed by ComponentTypeId (null for dense / unregistered).
+    const std::vector<std::unique_ptr<IComponentStorage>>& SparseStorages() const {
+        return sparse_storages_;
+    }
+
+    // Whether a given component id uses sparse storage.
+    bool IsSparseId(ComponentTypeId id) const {
+        return id < component_kinds_.size() && component_kinds_[id] == StorageKind::Sparse;
+    }
+
+    // Typed access to a sparse component storage (used by queries).
     template<typename T>
-    ComponentStorage<T>& GetStorage() {
-        static_assert(IsComponent<T>::value,
-                      "ekit: T is not declared as a component. Add 'EKIT_COMPONENT(T)'.");
-        const auto id = ComponentTypeIdOf<T>;
-        if (id == kInvalidComponentTypeId || static_cast<std::size_t>(id) >= storages_.size() ||
-            !storages_[id]) {
-            throw EkitException("ekit: component '" + std::string(ComponentNameOf<T>()) +
-                                "' is not registered in this World. Call world.RegisterComponent<" +
-                                ComponentNameOf<T>() + ">() first.");
-        }
-        return *static_cast<ComponentStorage<T>*>(storages_[id].get());
+    ComponentStorage<T>& GetSparseStorage() {
+        const auto id = GetComponentTypeId<T>();
+        return *static_cast<ComponentStorage<T>*>(sparse_storages_[id].get());
     }
 
     template<typename T>
-    const ComponentStorage<T>& GetStorage() const {
-        static_assert(IsComponent<T>::value,
-                      "ekit: T is not declared as a component. Add 'EKIT_COMPONENT(T)'.");
-        const auto id = ComponentTypeIdOf<T>;
-        if (id == kInvalidComponentTypeId || static_cast<std::size_t>(id) >= storages_.size() ||
-            !storages_[id]) {
-            throw EkitException("ekit: component '" + std::string(ComponentNameOf<T>()) +
-                                "' is not registered in this World. Call world.RegisterComponent<" +
-                                ComponentNameOf<T>() + ">() first.");
-        }
-        return *static_cast<const ComponentStorage<T>*>(storages_[id].get());
+    const ComponentStorage<T>& GetSparseStorage() const {
+        const auto id = GetComponentTypeId<T>();
+        return *static_cast<const ComponentStorage<T>*>(sparse_storages_[id].get());
     }
 
 private:
+    template<typename T>
+    ComponentTypeId RegisterComponentImpl(StorageKind kind) {
+        static_assert(IsComponent<T>::value,
+                      "ekit: T is not declared as a component. Add 'EKIT_COMPONENT(T)' after "
+                      "declaring T, or specialize ekit::IsComponent<T>.");
+        static_assert(std::is_trivially_copyable_v<T>,
+                      "ekit: component types must be trivially copyable (POD-like).");
+        static_assert(std::is_default_constructible_v<T>,
+                      "ekit: component types must be default constructible.");
+        static_assert(alignof(T) <= alignof(std::max_align_t),
+                      "ekit: over-aligned components are not supported.");
+
+        auto& id = ComponentTypeIdOf<T>;
+        if (id == kInvalidComponentTypeId) {
+            id = detail::NextComponentTypeId().fetch_add(1);
+        }
+        if (static_cast<std::size_t>(id) >= component_infos_.size()) {
+            component_infos_.resize(static_cast<std::size_t>(id) + 1);
+            component_kinds_.resize(static_cast<std::size_t>(id) + 1);
+        }
+        if (component_infos_[id].size == 0) {
+            component_infos_[id] = ComponentInfo{sizeof(T), alignof(T), ComponentNameOf<T>()};
+            component_kinds_[id] = kind;
+            ++storage_count_;
+        }
+        if (kind == StorageKind::Sparse) {
+            if (static_cast<std::size_t>(id) >= sparse_storages_.size()) {
+                sparse_storages_.resize(static_cast<std::size_t>(id) + 1);
+            }
+            if (!sparse_storages_[id]) {
+                sparse_storages_[id] = std::make_unique<ComponentStorage<T>>();
+            }
+        }
+        return id;
+    }
+
+    // Add a DENSE component (moves the entity between archetypes).
+    template<typename T, typename... Args>
+    T& AddDense(Entity e, ComponentTypeId id, Args&&... args) {
+        const EntityId index = e.GetIndex();
+        const std::size_t from_aid = entity_archetype_[index];
+        const std::size_t from_row = entity_row_[index];
+        Archetype& from = *archetypes_[from_aid];
+        if (from.ColumnIndex(id) >= 0) {
+            throw EkitException("ekit: component already present on this entity.");
+        }
+
+        std::vector<ComponentTypeId> target_types = from.types;
+        target_types.push_back(id);
+        std::sort(target_types.begin(), target_types.end());
+        const std::size_t to_aid = GetOrCreateArchetype(target_types);
+        Archetype& to = *archetypes_[to_aid];
+
+        to.PushRow(index);
+        const std::size_t to_row = to.RowCount() - 1;
+        for (std::size_t k = 0; k < from.types.size(); ++k) {
+            const ComponentTypeId cid = from.types[k];
+            const std::ptrdiff_t to_k = to.ColumnIndex(cid);
+            std::memcpy(to.columns[to_k].data() + to_row * from.sizes[k],
+                        from.columns[k].data() + from_row * from.sizes[k], from.sizes[k]);
+        }
+        T value{std::forward<Args>(args)...};
+        const std::ptrdiff_t new_k = to.ColumnIndex(id);
+        to.Write<T>(static_cast<std::size_t>(new_k), to_row, value);
+
+        EraseFromArchetype(from_aid, from_row);
+        entity_archetype_[index] = to_aid;
+        entity_row_[index] = to_row;
+        return to.Column<T>(static_cast<std::size_t>(new_k))[to_row];
+    }
+
+    bool RemoveDense(Entity e, ComponentTypeId id) {
+        const EntityId index = e.GetIndex();
+        const std::size_t from_aid = entity_archetype_[index];
+        const std::size_t from_row = entity_row_[index];
+        Archetype& from = *archetypes_[from_aid];
+        if (from.ColumnIndex(id) < 0) {
+            return false;
+        }
+
+        std::vector<ComponentTypeId> target_types;
+        target_types.reserve(from.types.size());
+        for (ComponentTypeId t : from.types) {
+            if (t != id) {
+                target_types.push_back(t);
+            }
+        }
+        const std::size_t to_aid = GetOrCreateArchetype(target_types);
+        Archetype& to = *archetypes_[to_aid];
+
+        to.PushRow(index);
+        const std::size_t to_row = to.RowCount() - 1;
+        for (std::size_t k = 0; k < from.types.size(); ++k) {
+            if (from.types[k] == id) {
+                continue;
+            }
+            const std::ptrdiff_t to_k = to.ColumnIndex(from.types[k]);
+            std::memcpy(to.columns[to_k].data() + to_row * from.sizes[k],
+                        from.columns[k].data() + from_row * from.sizes[k], from.sizes[k]);
+        }
+
+        EraseFromArchetype(from_aid, from_row);
+        entity_archetype_[index] = to_aid;
+        entity_row_[index] = to_row;
+        return true;
+    }
+
+    std::size_t EmptyArchetypeId() {
+        return GetOrCreateArchetype({});
+    }
+
+    std::size_t GetOrCreateArchetype(const std::vector<ComponentTypeId>& types) {
+        auto it = archetype_index_.find(types);
+        if (it != archetype_index_.end()) {
+            return it->second;
+        }
+        auto a = std::make_unique<Archetype>();
+        a->types = types;
+        a->BuildColumnLookup();
+        a->sizes.reserve(types.size());
+        for (ComponentTypeId id : types) {
+            a->sizes.push_back(component_infos_[id].size);
+        }
+        a->columns.resize(types.size());
+        const std::size_t id = archetypes_.size();
+        archetypes_.push_back(std::move(a));
+        archetype_index_.emplace(types, id);
+        return id;
+    }
+
+    void PlaceInArchetype(EntityId index, std::size_t aid) {
+        Archetype& a = *archetypes_[aid];
+        a.PushRow(index);
+        entity_archetype_[index] = aid;
+        entity_row_[index] = a.RowCount() - 1;
+    }
+
+    void EraseFromArchetype(std::size_t aid, std::size_t row) {
+        Archetype& a = *archetypes_[aid];
+        a.RemoveRow(row);
+        if (row < a.RowCount()) {
+            const EntityId moved = a.entities[row];
+            entity_archetype_[moved] = aid;
+            entity_row_[moved] = row;
+        }
+    }
+
     void RequireAlive(Entity e) const {
         if (!IsAlive(e)) {
             throw EkitException("ekit: invalid or dead entity passed to World operation.");
@@ -529,27 +760,27 @@ private:
         }
     }
 
-    // Component storages indexed by ComponentTypeId (id 0 is reserved).
-    std::vector<std::unique_ptr<IComponentStorage>> storages_;
+    std::vector<ComponentInfo> component_infos_{ComponentInfo{}};
+    std::vector<StorageKind> component_kinds_{StorageKind::Dense};
     std::size_t storage_count_ = 0;
 
-    // Entity storage: index -> current generation, with explicit liveness.
-    // Slot 0 is reserved for Entity::Null.
+    std::vector<std::unique_ptr<Archetype>> archetypes_;
+    std::map<std::vector<ComponentTypeId>, std::size_t> archetype_index_;
+    std::vector<std::unique_ptr<IComponentStorage>> sparse_storages_;
+
     std::vector<Entity> entities_{Entity::Null};
     std::vector<std::uint8_t> alive_{0};
     std::vector<EntityId> free_list_;
     std::size_t alive_count_ = 0;
 
+    std::vector<std::size_t> entity_archetype_{0};
+    std::vector<std::size_t> entity_row_{0};
+
     std::unordered_map<std::string, Entity> name_to_entity_;
     std::unordered_map<EntityId, std::string> entity_to_name_;
 
-    // Event sinks keyed by detail::TypeIdOf<T>().
     std::unordered_map<std::size_t, std::any> event_sinks_;
 };
-
-// ---------------------------------------------------------------------------
-// EventSubscription implementation
-// ---------------------------------------------------------------------------
 
 inline void EventSubscription::Unsubscribe() {
     if (world_) {
@@ -559,10 +790,4 @@ inline void EventSubscription::Unsubscribe() {
     index_ = detail::kNpos;
 }
 
-
 } // namespace ekit
-
-
-
-
-

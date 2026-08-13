@@ -1,19 +1,21 @@
-﻿#pragma once
+#pragma once
 // ekit - component.hpp
 //
 // Components are plain POD structs that must be explicitly declared with the
 // EKIT_COMPONENT(T) macro (or an explicit specialization of ekit::IsComponent)
 // and explicitly registered at runtime with world.RegisterComponent<T>().
 //
-// ComponentStorage<T> is a sparse-set based storage: a dense, cache-friendly
-// array of components plus a sparse index from entity -> dense position.
-// Removal is swap-and-pop (O(1), order not preserved).
+// Storage is archetype-based: all entities that share the exact same component
+// set live in one Archetype, and each component is a contiguous SoA column
+// aligned by row. This lets queries hand out raw, SIMD-friendly component
+// pointers for a whole batch at once (ForEachBatch).
 
 #include "core.hpp"
 #include "entity.hpp"
 
 #include <algorithm>
-#include <memory>
+#include <cstddef>
+#include <cstring>
 #include <typeindex>
 #include <vector>
 
@@ -74,40 +76,145 @@ inline ComponentTypeId ComponentTypeIdOf = kInvalidComponentTypeId;
 // The macro only injects a marker member and a name accessor, so the struct
 // stays a plain POD. Because it lives inside the class, it works in any
 // namespace (no explicit template specialization required).
-//
-// Alternative for types you cannot modify: specialize ekit::IsComponent<T>
-// inside namespace ekit, e.g.
-//   namespace ekit { template<> struct IsComponent<::my_ns::Foo> : std::true_type {}; }
-//
-// Undeclared types produce clear, readable compile errors instead of a
-// template error storm.
 #define EKIT_COMPONENT(Type)                                                                          \
     using IsEkitComponent = void;                                                                     \
     static constexpr const char* GetComponentName() noexcept { return #Type; }
 
 // ---------------------------------------------------------------------------
-// Component storage
+// Component metadata (registered at runtime)
 // ---------------------------------------------------------------------------
 
-// Type-erased base of every component storage. The World stores these in a
-// vector indexed by ComponentTypeId.
+struct ComponentInfo {
+    std::size_t size = 0;   // sizeof(T); 0 == unregistered
+    std::size_t align = 1;  // alignof(T)
+    const char* name = "";  // ComponentNameOf<T>()
+};
+
+// ---------------------------------------------------------------------------
+// Archetype storage
+// ---------------------------------------------------------------------------
+
+// An archetype holds every entity that shares the exact same component set.
+// Each component type is a contiguous SoA column, and all columns are aligned
+// by row, so a query can hand out raw component pointers for an entire batch
+// at once (ForEachBatch). Components are trivially copyable, so rows are moved
+// with memcpy and columns are plain aligned byte arrays.
+class Archetype {
+public:
+    // Sorted component ids (ascending) of this archetype.
+    std::vector<ComponentTypeId> types;
+
+    // Flat lookup: component id -> column index (-1 == absent).
+    std::vector<std::int16_t> col_of_type;
+
+    // Size in bytes of each component type, parallel to `types`.
+    std::vector<std::size_t> sizes;
+
+    // Row -> entity index.
+    std::vector<EntityId> entities;
+
+    // One byte column per component type; column k holds rows * sizes[k] bytes.
+    std::vector<std::vector<std::byte>> columns;
+
+    std::size_t RowCount() const {
+        return entities.size();
+    }
+
+    // Column index of a component id, or -1 when absent (O(1) flat lookup).
+    std::ptrdiff_t ColumnIndex(ComponentTypeId id) const {
+        if (static_cast<std::size_t>(id) >= col_of_type.size()) {
+            return -1;
+        }
+        return static_cast<std::ptrdiff_t>(col_of_type[id]);
+    }
+
+    // Builds the O(1) type id -> column index lookup after `types` is set.
+    void BuildColumnLookup() {
+        std::size_t max_id = 0;
+        for (ComponentTypeId id : types) {
+            max_id = std::max<std::size_t>(max_id, static_cast<std::size_t>(id));
+        }
+        col_of_type.assign(max_id + 1, -1);
+        for (std::size_t k = 0; k < types.size(); ++k) {
+            col_of_type[types[k]] = static_cast<std::int16_t>(k);
+        }
+    }
+
+    // Typed pointer to a component column (aligned SoA array).
+    template<typename T>
+    T* Column(std::size_t col) {
+        return reinterpret_cast<T*>(columns[col].data());
+    }
+
+    template<typename T>
+    const T* Column(std::size_t col) const {
+        return reinterpret_cast<const T*>(columns[col].data());
+    }
+
+    // Appends an empty row (component bytes are zero-initialized).
+    void PushRow(EntityId entity) {
+        entities.push_back(entity);
+        for (std::size_t k = 0; k < columns.size(); ++k) {
+            columns[k].resize(columns[k].size() + sizes[k]);
+        }
+    }
+
+    // Copies row `from` into row `to` byte-wise. Both rows must exist.
+    void CopyRow(std::size_t from, std::size_t to) {
+        for (std::size_t k = 0; k < columns.size(); ++k) {
+            std::memcpy(columns[k].data() + to * sizes[k],
+                        columns[k].data() + from * sizes[k], sizes[k]);
+        }
+    }
+
+    // Moves the last row into `row` and pops the last row. The caller must
+    // update the moved entity's location afterwards.
+    void RemoveRow(std::size_t row) {
+        const std::size_t last = RowCount() - 1;
+        if (row != last) {
+            entities[row] = entities[last];
+            CopyRow(last, row);
+        }
+        entities.pop_back();
+        for (std::size_t k = 0; k < columns.size(); ++k) {
+            columns[k].resize(columns[k].size() - sizes[k]);
+        }
+    }
+
+    // Writes one component value into column `col`, row `row`.
+    template<typename T>
+    void Write(std::size_t col, std::size_t row, const T& value) {
+        std::memcpy(columns[col].data() + row * sizeof(T), &value, sizeof(T));
+    }
+
+    void Clear() {
+        entities.clear();
+        for (auto& col : columns) {
+            col.clear();
+        }
+    }
+};
+
+// ---------------------------------------------------------------------------
+// Sparse storage (alternative backend)
+// ---------------------------------------------------------------------------
+
+// Type-erased base of a sparse component storage. Dense components live in
+// archetypes (SoA, fast iteration); components the user marks as sparse live
+// here (fast random access + cheap structural changes).
 class IComponentStorage {
 public:
     virtual ~IComponentStorage() = default;
-
-    // Number of entities that currently own this component.
     virtual std::size_t Size() const = 0;
-
-    // Remove the component of the entity with the given index, if present.
+    virtual bool Contains(EntityId index) const = 0;
     virtual bool TryRemove(EntityId index) = 0;
-
-    // Remove all instances of this component.
     virtual void Clear() = 0;
-
     virtual std::type_index GetTypeIndex() const = 0;
     virtual const char* GetTypeName() const = 0;
 };
 
+// Sparse-set storage: dense array + entity array + sparse index. Removal is
+// swap-and-pop (O(1)); random access is O(1) via the sparse index.
 template<typename T>
 class ComponentStorage final : public IComponentStorage {
 public:
@@ -133,11 +240,10 @@ public:
         return &components_[static_cast<std::size_t>(sparse_[index]) - 1];
     }
 
-    // Returns a reference to the component, throws if not present.
     T& Get(EntityId index) {
         T* result = TryGet(index);
         if (result == nullptr) {
-            throw EkitException("ekit: component is not present on this entity.");
+            throw EkitException("ekit: sparse component is not present on this entity.");
         }
         return *result;
     }
@@ -145,17 +251,16 @@ public:
     const T& Get(EntityId index) const {
         const T* result = TryGet(index);
         if (result == nullptr) {
-            throw EkitException("ekit: component is not present on this entity.");
+            throw EkitException("ekit: sparse component is not present on this entity.");
         }
         return *result;
     }
 
-    // Constructs the component in place. Throws if the entity already owns it.
     template<typename... Args>
     T& Emplace(EntityId index, Args&&... args) {
         EnsureSparse(index);
         if (sparse_[index] != 0) {
-            throw EkitException("ekit: component already present on this entity.");
+            throw EkitException("ekit: sparse component already present on this entity.");
         }
         const std::size_t dense_index = components_.size();
         components_.emplace_back(std::forward<Args>(args)...);
@@ -164,7 +269,6 @@ public:
         return components_.back();
     }
 
-    // Swap-and-pop removal. O(1); does not preserve iteration order.
     bool TryRemove(EntityId index) override {
         if (!Contains(index)) {
             return false;
@@ -188,7 +292,6 @@ public:
         std::fill(sparse_.begin(), sparse_.end(), 0);
     }
 
-    // Entity index of the dense element at the given position.
     EntityId EntityAt(std::size_t dense_index) const {
         return entities_[dense_index];
     }
@@ -199,10 +302,6 @@ public:
 
     const T& ComponentAt(std::size_t dense_index) const {
         return components_[dense_index];
-    }
-
-    void Reserve(std::size_t capacity) {
-        components_.reserve(capacity);
     }
 
     std::type_index GetTypeIndex() const override {
@@ -220,14 +319,9 @@ private:
         }
     }
 
-    // Dense storage (cache-friendly iteration).
     std::vector<T> components_;
     std::vector<EntityId> entities_;
-
-    // Sparse index: entity index -> dense index + 1 (0 == absent).
     std::vector<std::uint32_t> sparse_;
 };
 
 } // namespace ekit
-
-

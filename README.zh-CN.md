@@ -59,6 +59,51 @@ int main() {
 }
 ```
 
+## 像写 C# 一样顺手
+
+对于 90% 的常见场景，`World` 直接提供 C# 风格的快捷方法，不必每次都拼出完整的流式查询：
+
+```cpp
+world.RegisterComponents<Position, Velocity>();
+
+// 统计拥有全部这些组件的实体数量
+std::size_t movers = world.Count<Position, Velocity>();
+
+// 一次调用完成更新（C#：foreach (var e in view)）
+world.ForEach<Position, Velocity>([](Position& p, Velocity& v) {
+    p.x += v.vx;
+    p.y += v.vy;
+});
+
+// 并行标量更新
+ekit::ThreadPool pool(0); // 0 == 硬件并发数
+world.ForEachParallel<Position, Velocity>(pool, [](Position& p, Velocity& v) {
+    p.x += v.vx;
+});
+
+// SoA 批处理更新（仅限 dense 组件，直接拿到对齐的裸指针）
+world.ForEachBatch<Position, Velocity>([](Position* p, Velocity* v, std::size_t n) {
+    for (std::size_t i = 0; i < n; ++i) {
+        p[i].x += v[i].vx;
+    }
+});
+```
+
+每个快捷方法都等价于 `Query<Ts...>().Method(...)`，因此需要过滤时随时可以退回完整的
+流式链（`Where` / `With` / `Without` / `Optional`）：
+
+```cpp
+world.Query<Position, Velocity>()
+     .With<Renderable>()
+     .Without<Disabled>()
+     .Where([](Position&, Velocity&, Renderable&) { return true; })
+     .ForEach([](ekit::Entity e, Position& p, Velocity& v, Renderable&) {
+         // ...
+     });
+```
+
+完整的可运行示例见[`examples/ergonomic.cpp`](examples/ergonomic.cpp)，使用
+`ekit_ergonomic` 目标构建。
 ## 功能
 
 - **实体（Entity）**：强类型、带世代编号的句柄，可安全处理失效句柄（`Entity::Null`、`IsAlive`，槽位回收时自动递增世代编号）。
@@ -183,20 +228,24 @@ ctest --test-dir build -C Release
 
 ## 单元测试
 
-`tests/tests.cpp` 随库一起发布，通过 `ctest` 运行：**37 个测试用例 / 272 项断言，全部通过**。覆盖范围：
+`tests/tests.cpp` 随库一起发布，通过 `ctest` 运行：**47 个测试用例 / 304 项断言，全部通过**。覆盖范围：
 
 | 领域 | 用例数 |
 | --- | --- |
-| 实体 - 世代编号、失效句柄安全、槽位回收、世代溢出 | 5 |
+| 实体 - 世代编号、失效句柄安全、槽位回收 | 5 |
 | 组件 - 注册、增删改查、错误路径、清除 | 6 |
 | 查询 - ForEach、Where、With/Without/Optional、const 引用 | 5 |
 | 并行查询 - ForEachParallel 正确性、过滤、确定性写入 | 3 |
+| SoA 批查询 - ForEachBatch / ForEachBatchParallel | 2 |
+| World 快捷方法 - ForEach / ForEachParallel / ForEachBatch(Parallel) / Count | 3 |
 | 命名实体 | 1 |
-| 事件 - 订阅/派发、回调中退订 | 3 |
+| 事件 - 订阅/派发、多个处理器 | 3 |
 | 系统与调度器 - 依赖排序、并行、双写串行、真实环检测 | 6 |
 | 组件声明 - 特性、手动特化 | 2 |
+| 稀疏组件 - 基础 CRUD、并行查询 | 2 |
+| 流处理 - ScratchSoa 收集后批处理 | 3 |
 | 回归 - 销毁后遍历、空闲槽访问、遍历中改组件、世代溢出、自退订、任务异常后调度器恢复 | 6 |
-| **合计** | **37 / 272** |
+| **合计** | **47 / 304** |
 
 运行方式：
 
@@ -212,22 +261,27 @@ cmake --build build --config Release --target ekit_tests
 include/ekit/
   core.hpp        异常、TypeList、类型 ID
   entity.hpp      Entity（带世代编号的句柄）
-  component.hpp   EKIT_COMPONENT、ComponentStorage（稀疏集）
-  query.hpp       流畅 Query（Where / With / Without / Optional / ForEach / ForEachParallel）
+  component.hpp   EKIT_COMPONENT、Archetype（SoA）+ ComponentStorage（稀疏集）
+  query.hpp       流畅 Query（Where / With / Without / Optional / ForEach / ForEachBatch / ForEachParallel）
+  stream.hpp      ScratchSoa<Ts...> 收集后批处理暂存缓冲
   parallel.hpp    可复用 ThreadPool + 分块 ParallelFor
-  world.hpp       World、组件 CRUD、命名实体、事件
+  world.hpp       World、组件 CRUD、命名实体、事件、C# 风格快捷方法
   system.hpp      系统接口 + Reads/Writes 提取
   scheduler.hpp   依赖图调度器 + 线程池
   ekit.hpp        统一入口
-```
 
+examples/
+  basic.cpp       经典系统/查询模拟
+  ergonomic.cpp   "像写 C# 一样"的完整示例
+  boids/          GLFW boids 案例 + EnTT 对比
+```
 ## 路线图
 
 - [x] Entity / Component / World 核心（稀疏集存储）
 - [x] 流畅 Query（`Where / With / Without / Optional`）
 - [x] 系统 `Reads/Writes` + 并行 Scheduler
 - [x] 事件系统（`Subscribe` / `Emit`）
-- [ ] Archetype 分块（SoA）作为下一层存储
+- [x] Archetype 分块（SoA）+ 流处理/批处理
 - [x] 单元测试 + 与 `entt` 对比基准
 - [ ] CMake 包配置（`find_package(ekit)`）
 

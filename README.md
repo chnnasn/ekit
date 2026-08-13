@@ -69,6 +69,54 @@ int main() {
 }
 ```
 
+## Write it like C#
+
+For the 90% case, `World` exposes C#-style shortcuts so you do not have to spell
+out a full fluent query:
+
+```cpp
+world.RegisterComponents<Position, Velocity>();
+
+// Count entities that have all of these components
+std::size_t movers = world.Count<Position, Velocity>();
+
+// Update them in one call (C#: foreach (var e in view))
+world.ForEach<Position, Velocity>([](Position& p, Velocity& v) {
+    p.x += v.vx;
+    p.y += v.vy;
+});
+
+// Parallel scalar update
+ekit::ThreadPool pool(0); // 0 == hardware concurrency
+world.ForEachParallel<Position, Velocity>(pool, [](Position& p, Velocity& v) {
+    p.x += v.vx;
+});
+
+// SoA batch update (dense components only, raw aligned pointers)
+world.ForEachBatch<Position, Velocity>([](Position* p, Velocity* v, std::size_t n) {
+    for (std::size_t i = 0; i < n; ++i) {
+        p[i].x += v[i].vx;
+    }
+});
+```
+
+Every shortcut is literally `Query<Ts...>().Method(...)`, so you can always drop
+back to the full fluent chain (`Where` / `With` / `Without` / `Optional`) when you
+need filters:
+
+```cpp
+world.Query<Position, Velocity>()
+     .With<Renderable>()
+     .Without<Disabled>()
+     .Where([](Position&, Velocity&, Renderable&) { return true; })
+     .ForEach([](ekit::Entity e, Position& p, Velocity& v, Renderable&) {
+         // ...
+     });
+```
+
+A runnable tour of the ergonomic surface lives in
+[`examples/ergonomic.cpp`](examples/ergonomic.cpp); build it with the
+`ekit_ergonomic` target.
 ## Features
 
 - **Entity** — strong-typed, generation-based handle with dangling-handle safety
@@ -228,20 +276,24 @@ ctest --test-dir build -C Release
 ## Unit tests
 
 `tests/tests.cpp` ships with the library and is run via `ctest`:
-**37 test cases / 272 assertions, all passing.** Coverage:
+**47 test cases / 304 assertions, all passing.** Coverage:
 
 | area | tests |
 | --- | --- |
-| Entity - generation, stale-handle safety, slot recycling, generation overflow | 5 |
+| Entity - generation, stale-handle safety, slot recycling | 5 |
 | Components - registration, CRUD, error paths, clear | 6 |
 | Queries - ForEach, Where, With/Without/Optional, const refs | 5 |
 | Parallel queries - ForEachParallel correctness, filters, deterministic writes | 3 |
+| SoA batch queries - ForEachBatch / ForEachBatchParallel | 2 |
+| World shortcuts - ForEach / ForEachParallel / ForEachBatch(Parallel) / Count | 3 |
 | Named entities | 1 |
-| Events - subscribe/emit, unsubscribe during emit | 3 |
+| Events - subscribe/emit, multiple handlers | 3 |
 | Systems & Scheduler - dependency ordering, parallelism, writer serialization, genuine-cycle detection | 6 |
 | Component declarations - traits, manual specialization | 2 |
+| Sparse components - basic CRUD, parallel queries | 2 |
+| Stream processing - ScratchSoa collect-then-batch | 3 |
 | Regression - destroy-then-iterate, free-slot access, mutation during iteration, generation overflow, self-unsubscribe, scheduler recovery after a task exception | 6 |
-| **Total** | **37 / 272** |
+| **Total** | **47 / 304** |
 
 Run them with:
 
@@ -257,22 +309,27 @@ cmake --build build --config Release --target ekit_tests
 include/ekit/
   core.hpp        exceptions, TypeList, type ids
   entity.hpp      Entity (generation-based handle)
-  component.hpp   EKIT_COMPONENT, ComponentStorage (sparse set)
-  query.hpp       fluent Query (Where / With / Without / Optional / ForEach / ForEachParallel)
+  component.hpp   EKIT_COMPONENT, Archetype (SoA) + ComponentStorage (sparse set)
+  query.hpp       fluent Query (Where / With / Without / Optional / ForEach / ForEachBatch / ForEachParallel)
+  stream.hpp      ScratchSoa<Ts...> collect-then-batch staging buffer
   parallel.hpp    reusable ThreadPool + chunked ParallelFor
-  world.hpp       World, component CRUD, named entities, events
+  world.hpp       World, component CRUD, named entities, events, C#-style shortcuts
   system.hpp      system interface + Reads/Writes extraction
   scheduler.hpp   dependency-graph scheduler + thread pool
   ekit.hpp        unified entry point
-```
 
+examples/
+  basic.cpp       classic system/query simulation
+  ergonomic.cpp   the "write it like C#" tour
+  boids/          GLFW boids case study + EnTT comparison
+```
 ## Roadmap
 
 - [x] Entity / Component / World core (sparse-set storage)
 - [x] Fluent Query with `Where / With / Without / Optional`
 - [x] System `Reads/Writes` + parallel Scheduler
 - [x] Event system (`Subscribe` / `Emit`)
-- [ ] Archetype chunks (SoA) as the next storage tier
+- [x] Archetype chunks (SoA) + stream/batch processing
 - [x] Unit tests + benchmark vs `entt`
 - [ ] CMake package config (`find_package(ekit)`)
 
