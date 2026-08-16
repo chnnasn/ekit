@@ -59,10 +59,55 @@ int main() {
 }
 ```
 
+## 像写 C# 一样顺手
+
+对于 90% 的常见场景，`World` 直接提供 C# 风格的快捷方法，不必每次都拼出完整的流式查询：
+
+```cpp
+world.RegisterComponents<Position, Velocity>();
+
+// 统计拥有全部这些组件的实体数量
+std::size_t movers = world.Count<Position, Velocity>();
+
+// 一次调用完成更新（C#：foreach (var e in view)）
+world.ForEach<Position, Velocity>([](Position& p, Velocity& v) {
+    p.x += v.vx;
+    p.y += v.vy;
+});
+
+// 并行标量更新
+ekit::ThreadPool pool(0); // 0 == 硬件并发数
+world.ForEachParallel<Position, Velocity>(pool, [](Position& p, Velocity& v) {
+    p.x += v.vx;
+});
+
+// SoA 批处理更新（仅限 dense 组件，直接拿到对齐的裸指针）
+world.ForEachBatch<Position, Velocity>([](Position* p, Velocity* v, std::size_t n) {
+    for (std::size_t i = 0; i < n; ++i) {
+        p[i].x += v[i].vx;
+    }
+});
+```
+
+每个快捷方法都等价于 `Query<Ts...>().Method(...)`，因此需要过滤时随时可以退回完整的
+流式链（`Where` / `With` / `Without` / `Optional`）：
+
+```cpp
+world.Query<Position, Velocity>()
+     .With<Renderable>()
+     .Without<Disabled>()
+     .Where([](Position&, Velocity&, Renderable&) { return true; })
+     .ForEach([](ekit::Entity e, Position& p, Velocity& v, Renderable&) {
+         // ...
+     });
+```
+
+完整的可运行示例见[`examples/ergonomic.cpp`](examples/ergonomic.cpp)，使用
+`ekit_ergonomic` 目标构建。
 ## 功能
 
 - **实体（Entity）**：强类型、带世代编号的句柄，可安全处理失效句柄（`Entity::Null`、`IsAlive`，槽位回收时自动递增世代编号）。
-- **组件（Component）**：在类体内通过 `EKIT_COMPONENT(T)` 声明的 POD 结构体；使用 `world.RegisterComponent<T>()` 显式注册；采用稀疏集存储（缓存友好的密集数组与交换删除）。
+- **组件（Component）**：在类体内通过 `EKIT_COMPONENT(T)` 声明的 POD 结构体；使用 `world.RegisterComponent<T>()` 显式注册为 dense archetype SoA 存储，或使用 `world.RegisterSparseComponent<T>()` 注册为按类型的稀疏集（缓存友好的密集数组与交换删除）。
 - **世界（World）**：实体创建与销毁、组件 `Add / Emplace / Set / Get / TryGet / Has / Remove / Patch / Clear`、命名实体、批量注册和 `ClearAll`。
 - **查询（Query）**：支持 `Where / With / Without / Optional / ForEach / Count` 的流畅查询，并从符合条件的存储中最小的那个开始迭代：
   ```cpp
@@ -78,6 +123,14 @@ int main() {
        });
   ```
   必需组件以引用传入，可选组件以指针传入（不存在时为 `nullptr`）；`Entity` 句柄是可选参数，存在时必须位于首位。
+- **数据并行查询与线程池（Data-parallel Query & ThreadPool）**：`ekit::ThreadPool` 配合
+  `Query::ForEachParallel(pool, fn)` 把最小存储切分成多个分块并发执行（动态原子取块，负载均衡）。
+  回调只允许读写“当前实体自己的组件”：
+  ```cpp
+  ekit::ThreadPool pool(0);                 // 0 == 硬件并发数
+  world.Query<Position, Velocity>()
+       .ForEachParallel(pool, [](Position& p, Velocity& v) { p.x += v.vx; });
+  ```
 - **系统与调度器（System & Scheduler）**：系统声明 `Reads` / `Writes`；调度器构建依赖 DAG，并通过内部线程池并行执行相互独立的系统：
   ```cpp
   struct GravitySystem {
@@ -136,17 +189,17 @@ powershell -ExecutionPolicy Bypass -File examples/boids/render.ps1 -Fps 30   # -
 
 ## 基准测试
 
-完整测试条件、原始数据与分析脚本见 [`benchmarks/`](benchmarks/README.zh-CN.md)。要点结果（Intel i7-14650HX，24 线程，MSVC Release /O2，世界 800x600，种子 20260810）：
+完整测试条件、原始数据与分析脚本见 [`benchmarks/`](benchmarks/README.zh-CN.md)。要点结果（Intel i7-14650HX，24 线程，MSVC Release /O2，世界 800x600，种子 20260810，120 个计时步 + 20 个预热步）：
 
 ### boid 数量增加时的每步耗时
 
 | 从 | 到 | boid 倍数 | 耗时倍数 | 指数 |
 | --- | --- | --- | --- | --- |
-| 200 | 500 | 2.5x | 4.05x | 1.53 |
-| 1000 | 2000 | 2.0x | 3.07x | 1.62 |
-| 5000 | 10000 | 2.0x | 3.41x | 1.77 |
+| 200 | 500 | 2.5x | 4.82x | 1.72 |
+| 1000 | 2000 | 2.0x | 3.14x | 1.65 |
+| 5000 | 10000 | 2.0x | 3.26x | 1.71 |
 
-每步耗时按 n^1.5..n^1.8 增长，且指数**随密度上升趋向 2**：世界尺寸固定，boid 数量翻倍 → 密度翻倍 → 每只 boid 的邻居数翻倍，近邻搜索为 O(n x 邻居数)，均匀密度极限下即 O(n^2)。吞吐量从 200 只时的约 270 万 boids/s 跌至 10000 只时的约 28.5 万 boids/s。
+每步耗时按 n^1.5..n^1.7 增长，且指数**随密度上升趋向 2**：世界尺寸固定，boid 数量翻倍 → 密度翻倍 → 每只 boid 的邻居数翻倍，近邻搜索为 O(n x 邻居数)，均匀密度极限下即 O(n^2)。吞吐量从 200 只时的约 265 万 boids/s 跌至 10000 只时的约 23.8 万 boids/s。
 
 ![每步耗时 vs boid 数](benchmarks/chart_cost_vs_boids.png)
 
@@ -154,17 +207,16 @@ powershell -ExecutionPolicy Bypass -File examples/boids/render.ps1 -Fps 30   # -
 
 | boid 数 | t2 | t4 | t24 |
 | --- | --- | --- | --- |
-| 200 | 1.32x | 1.94x | 1.96x |
-| 10000 | 1.69x | 2.23x | 2.44x |
+| 200 | 1.26x | 1.97x | 1.92x |
+| 10000 | 1.69x | 2.50x | 2.51x |
 
-在这些测量中，超过 **4 线程**后加速比变化较小。依赖图包含 4 条可并行的规则系统，而网格重建与阶段二链为串行部分，因此观测到的加速比约为 2.2-2.9x，而不是 4x。
+在这些测量中，超过 **4 线程**后加速比变化较小。依赖图包含 4 条可并行的规则系统，而网格重建与阶段二链为串行部分，因此观测到的加速比约为 2.0-2.5x，而不是 4x。
 
 ![加速比 vs 线程数](benchmarks/chart_speedup_vs_threads.png)
 
 ### ekit vs EnTT（相同算法，EnTT v4）
 
-在这项基准测试中，单线程时 ekit 的测量结果快约 15-25%，4 线程时 EnTT 的测量结果快约 25-30%。差异与两者采用的查询迭代和并行化策略一致；在该测试负载下，两种实现产生的模拟状态位级一致。
-
+在本次 Windows/MSVC 构建下，ekit 调度器单线程时比 EnTT 慢约 20%，4 线程密集负载下慢约 1.7-1.9 倍。控制变量的数据并行路径 `ekit-dp`（相同分块、相同存储访问、相同组件集合）在 4 线程下将差距缩小到约 1.1-1.13 倍。两种实现产生的模拟状态位级一致。
 ## 构建与测试
 
 ```bash
@@ -175,19 +227,24 @@ ctest --test-dir build -C Release
 
 ## 单元测试
 
-`tests/tests.cpp` 随库一起发布，通过 `ctest` 运行：**34 个测试用例 / 269 项断言，全部通过**。覆盖范围：
+`tests/tests.cpp` 随库一起发布，通过 `ctest` 运行：**49 个测试用例 / 307 项断言，全部通过**。覆盖范围：
 
 | 领域 | 用例数 |
 | --- | --- |
-| 实体 - 世代编号、失效句柄安全、槽位回收、世代溢出 | 5 |
+| 实体 - 世代编号、失效句柄安全、槽位回收 | 5 |
 | 组件 - 注册、增删改查、错误路径、清除 | 6 |
-| 查询 - ForEach、Where、With/Without/Optional、const 引用 | 5 |
+| 查询 - ForEach、Where、With/Without/Optional、const 引用 | 6 |
+| 并行查询 - ForEachParallel 正确性、过滤、确定性写入 | 3 |
+| SoA 批查询 - ForEachBatch / ForEachBatchParallel | 3 |
+| World 快捷方法 - ForEach / ForEachParallel / ForEachBatch(Parallel) / Count | 3 |
 | 命名实体 | 1 |
-| 事件 - 订阅/派发、回调中退订 | 3 |
+| 事件 - 订阅/派发、多个处理器 | 3 |
 | 系统与调度器 - 依赖排序、并行、双写串行、真实环检测 | 6 |
 | 组件声明 - 特性、手动特化 | 2 |
+| 稀疏组件 - 基础 CRUD、并行查询 | 2 |
+| 流处理 - ScratchSoa 收集后批处理 | 3 |
 | 回归 - 销毁后遍历、空闲槽访问、遍历中改组件、世代溢出、自退订、任务异常后调度器恢复 | 6 |
-| **合计** | **34 / 269** |
+| **合计** | **49 / 307** |
 
 运行方式：
 
@@ -203,21 +260,27 @@ cmake --build build --config Release --target ekit_tests
 include/ekit/
   core.hpp        异常、TypeList、类型 ID
   entity.hpp      Entity（带世代编号的句柄）
-  component.hpp   EKIT_COMPONENT、ComponentStorage（稀疏集）
-  query.hpp       流畅 Query（Where / With / Without / Optional / ForEach）
-  world.hpp       World、组件 CRUD、命名实体、事件
+  component.hpp   EKIT_COMPONENT、Archetype（SoA）+ ComponentStorage（稀疏集）
+  query.hpp       流畅 Query（Where / With / Without / Optional / ForEach / ForEachBatch / ForEachParallel）
+  stream.hpp      ScratchSoa<Ts...> 收集后批处理暂存缓冲
+  parallel.hpp    可复用 ThreadPool + 分块 ParallelFor
+  world.hpp       World、组件 CRUD、命名实体、事件、C# 风格快捷方法
   system.hpp      系统接口 + Reads/Writes 提取
   scheduler.hpp   依赖图调度器 + 线程池
   ekit.hpp        统一入口
-```
 
+examples/
+  basic.cpp       经典系统/查询模拟
+  ergonomic.cpp   "像写 C# 一样"的完整示例
+  boids/          GLFW boids 案例 + EnTT 对比
+```
 ## 路线图
 
-- [x] Entity / Component / World 核心（稀疏集存储）
+- [x] Entity / Component / World 核心（dense archetype SoA + 稀疏集存储）
 - [x] 流畅 Query（`Where / With / Without / Optional`）
 - [x] 系统 `Reads/Writes` + 并行 Scheduler
 - [x] 事件系统（`Subscribe` / `Emit`）
-- [ ] Archetype 分块（SoA）作为下一层存储
+- [x] Archetype 分块（SoA）+ 流处理/批处理
 - [x] 单元测试 + 与 `entt` 对比基准
 - [ ] CMake 包配置（`find_package(ekit)`）
 

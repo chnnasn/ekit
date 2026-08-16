@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 // ekit - scheduler.hpp
 //
 // Scheduler runs systems in dependency order. Systems declare Reads/Writes;
@@ -13,6 +13,7 @@
 
 #include "world.hpp"
 #include "system.hpp"
+#include "parallel.hpp"
 
 #include <condition_variable>
 #include <deque>
@@ -25,106 +26,6 @@
 #include <vector>
 
 namespace ekit {
-
-namespace detail {
-
-// Minimal fixed-size thread pool. Tasks are independent; WaitAll blocks until
-// every submitted task has finished. Exceptions thrown inside tasks are
-// captured and re-thrown by TakeError() after WaitAll.
-class ThreadPool {
-public:
-    explicit ThreadPool(std::size_t thread_count) {
-        workers_.reserve(thread_count);
-        for (std::size_t i = 0; i < thread_count; ++i) {
-            workers_.emplace_back([this] {
-                for (;;) {
-                    std::function<void()> task;
-                    {
-                        std::unique_lock lock(mutex_);
-                        cv_.wait(lock, [this] { return stop_ || !tasks_.empty(); });
-                        if (stop_ && tasks_.empty()) {
-                            return;
-                        }
-                        task = std::move(tasks_.front());
-                        tasks_.pop_front();
-                    }
-                    try {
-                        task();
-                    } catch (...) {
-                        std::lock_guard lock(mutex_);
-                        if (!first_error_) {
-                            first_error_ = std::current_exception();
-                        }
-                    }
-                    {
-                        std::lock_guard lock(mutex_);
-                        --pending_;
-                        if (pending_ == 0) {
-                            done_cv_.notify_all();
-                        }
-                    }
-                }
-            });
-        }
-    }
-
-    ~ThreadPool() {
-        Shutdown();
-    }
-
-    ThreadPool(const ThreadPool&) = delete;
-    ThreadPool& operator=(const ThreadPool&) = delete;
-
-    template<typename F>
-    void Submit(F&& f) {
-        {
-            std::lock_guard lock(mutex_);
-            ++pending_;
-            tasks_.emplace_back(std::forward<F>(f));
-        }
-        cv_.notify_one();
-    }
-
-    // Blocks until every submitted task has completed.
-    void WaitAll() {
-        std::unique_lock lock(mutex_);
-        done_cv_.wait(lock, [this] { return pending_ == 0; });
-    }
-
-    // Returns and clears the first captured exception, if any.
-    std::exception_ptr TakeError() {
-        std::lock_guard lock(mutex_);
-        std::exception_ptr error = first_error_;
-        first_error_ = nullptr;
-        return error;
-    }
-
-private:
-    void Shutdown() {
-        {
-            std::lock_guard lock(mutex_);
-            stop_ = true;
-        }
-        cv_.notify_all();
-        for (auto& worker : workers_) {
-            if (worker.joinable()) {
-                worker.join();
-            }
-        }
-        workers_.clear();
-    }
-
-    std::vector<std::thread> workers_;
-    std::deque<std::function<void()>> tasks_;
-    std::mutex mutex_;
-    std::condition_variable cv_;
-    std::condition_variable done_cv_;
-    std::size_t pending_ = 0;
-    std::exception_ptr first_error_;
-    bool stop_ = false;
-};
-
-} // namespace detail
 
 class Scheduler {
 public:
@@ -148,7 +49,11 @@ public:
     }
 
     Scheduler& SetThreadCount(std::size_t count) {
-        thread_count_ = std::max<std::size_t>(1, count);
+        thread_count_ = count == 0 ? std::max<std::size_t>(1, std::thread::hardware_concurrency())
+                                   : count;
+        // Rebuild the pool lazily on the next parallel Run; an existing pool
+        // cannot change its worker count in place.
+        pool_.reset();
         return *this;
     }
 
@@ -347,12 +252,12 @@ private:
 
     void EnsurePool() {
         if (!pool_) {
-            pool_ = std::make_unique<detail::ThreadPool>(thread_count_);
+            pool_ = std::make_unique<ThreadPool>(thread_count_);
         }
     }
 
     std::vector<std::unique_ptr<ISystem>> systems_;
-    std::unique_ptr<detail::ThreadPool> pool_;
+    std::unique_ptr<ThreadPool> pool_;
     std::size_t thread_count_;
 };
 

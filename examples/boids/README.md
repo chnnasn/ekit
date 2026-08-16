@@ -61,47 +61,58 @@ cmake --build build --config Release --target ekit_entt_compare
 .\build\examples\boids\Release\ekit_entt_compare.exe   # 4 groups, EnTT left / ekit right
 ```
 
-Measured on this machine (30 timed steps + 10 warmup, world 800x600,
-`ekit/EnTT` < 1 means ekit is faster):
+The comparison has three columns:
+
+- `ekit` — the dependency-graph scheduler: whole systems run in parallel, one
+  thread each.
+- `ekit-dp` — the data-parallel query path. It uses the **same** dynamic
+  chunking and the **same** storage-driven component access as the EnTT side
+  (dense-array drive + per-component sparse lookup, identical component set), so
+  this column isolates the ECS layer itself.
+
+Measured on this machine (Windows 11, Intel i7-14650HX 24 threads, MSVC Release
+/O2, 30 timed steps + 10 warmup, world 800x600, seed 20260810; ratio < 1 means
+ekit is faster):
 
 ```
 threads = 1
-boids    entt ms/step   ekit ms/step   ekit/entt
-200      0.0978         0.1078         1.103
-1000     1.5310         1.3832         0.903
-5000     27.5485        23.3063        0.846
-10000    92.6480        75.5112        0.815
+boids    entt ms/step   ekit ms/step   ekit/entt ekit-dp ms/step ekit-dp/entt
+200      0.0930         0.1061         1.140     0.1042         1.120
+1000     1.4037         1.7053         1.215     1.6756         1.194
+5000     25.8781        31.2067        1.206     31.4271        1.214
+10000    88.0296        106.9959       1.215     105.9340       1.203
 
 threads = 2
-200      0.0867         0.0922         1.064
-1000     0.8839         0.8873         1.004
-5000     13.8857        13.8863        1.000
-10000    45.7371        45.4219        0.993
+200      0.1056         0.0934         0.884     0.1181         1.118
+1000     0.8267         1.1056         1.337     0.9474         1.146
+5000     13.2493        18.8909        1.426     15.8054        1.193
+10000    45.1254        63.0978        1.398     51.2334        1.135
 
 threads = 3
-200      0.0759         0.0652         0.858
-1000     0.6389         0.6180         0.967
-5000     9.5436         9.4031         0.985
-10000    30.8032        30.4022        0.987
+200      0.0683         0.0589         0.862     0.0862         1.262
+1000     0.5583         0.7473         1.339     0.6700         1.200
+5000     8.8551         12.6786        1.432     10.7378        1.213
+10000    29.5412        42.3230        1.433     36.0372        1.220
 
 threads = 4
-200      0.0753         0.0590         0.783
-1000     0.5106         0.6312         1.236
-5000     7.1973         9.4719         1.316
-10000    23.2569        30.4779        1.310
+200      0.0873         0.0637         0.730     0.0976         1.118
+1000     0.4492         0.7703         1.715     0.5407         1.204
+5000     7.4944         13.0885        1.746     8.4492         1.127
+10000    23.6035        45.1274        1.912     26.1160        1.106
 ```
-
 Takeaways:
 
-- **1 thread:** ekit measures ~15-18% faster at 5000/10000 boids. Its sparse-set
-  dense arrays and direct query dispatch may contribute to the difference.
-- **4 threads:** EnTT measures ~30% faster at 5000/10000 boids. Its chunked
-  `parallel_for` distributes entities across workers, while ekit parallelizes
-  whole systems and performs pool synchronization and dependency analysis per step.
-- At 2-3 threads the two are essentially equal.
+- **Scheduler comparison (`ekit`):** on this Windows/MSVC build, ekit's
+  whole-system scheduler is slower than EnTT at 1000+ boids (~1.2-1.9x on
+  dense workloads). The cause is the parallelism method: ekit runs each of the
+  4 phase-1 systems as one whole-system thread, while EnTT data-parallelizes
+  each query across threads.
+- **Controlled comparison (`ekit-dp`):** with identical algorithm, chunking,
+  storage access and component set, `ekit-dp` closes most of the gap and stays
+  ~1.1-1.26x slower than EnTT on this machine; at 200 boids it is roughly equal.
+- Both `ekit` and `ekit-dp` produce **bit-identical** states to EnTT.
 - The spatial grid sorts each cell by entity id so neighbor accumulation is
   order-independent and bit-deterministic on both sides.
-
 ## Algorithm
 
 Each boid evaluates rules against its neighbors every frame and steers accordingly:
@@ -259,48 +270,58 @@ cmake --build build --config Release --target ekit_boids_bench
 # custom matrix: .\...\ekit_boids_bench.exe --boids 200,500,1000 --threads 1,2,4,0
 ```
 
-Measured on this machine (24 hardware threads, world 800x600, 120 steps):
+Measured on this machine (Windows 11, Intel i7-14650HX 24 threads, MSVC Release
+/O2, world 800x600, seed 20260810, 120 timed steps + 20 warmup):
 
 ```
 boids    threads   ms/step     steps/s    speedup   k boids/s   us/boid
 ------   -------   --------    -------    -------   ---------   --------
-200      1         0.1300      7692.4     1.00      1538.5      0.650
-200      4         0.0717      13946.8    1.81      2789.4      0.359
+200      1         0.1488      6718.7     1.00      1343.7      0.744
+200      2         0.1184      8446.7     1.26      1689.3      0.592
+200      4         0.0755      13241.7    1.97      2648.3      0.378
+200      24        0.0775      12906.0    1.92      2581.2      0.387
 
-500      1         0.6234      1604.1     1.00      802.0       1.247
-500      4         0.2789      3585.0     2.23      1792.5      0.558
+500      1         0.7771      1286.8     1.00      643.4       1.554
+500      2         0.5361      1865.3     1.45      932.7       1.072
+500      4         0.3636      2750.2     2.14      1375.1      0.727
+500      24        0.3503      2854.9     2.22      1427.4      0.701
 
-1000     1         1.8703      534.7      1.00      534.7       1.870
-1000     4         0.8176      1223.1     2.29      1223.1      0.818
+1000     1         2.5356      394.4      1.00      394.4       2.536
+1000     2         1.5476      646.1      1.64      646.1       1.548
+1000     4         1.0596      943.8      2.39      943.8       1.060
+1000     24        1.0607      942.7      2.39      942.7       1.061
 
-2000     1         5.6782      176.1      1.00      352.2       2.839
-2000     4         2.4551      407.3      2.31      814.6       1.228
+2000     1         8.0494      124.2      1.00      248.5       4.025
+2000     2         4.8508      206.1      1.66      412.3       2.425
+2000     4         3.3307      300.2      2.42      600.5       1.665
+2000     24        3.3322      300.1      2.42      600.2       1.666
 
-5000     1         37.6368     26.6       1.00      132.8       7.527
-5000     4         15.7870     63.3       2.38      316.7       3.157
+5000     1         32.6087     30.7       1.00      153.3       6.522
+5000     2         18.9152     52.9       1.72      264.3       3.783
+5000     4         12.8591     77.8       2.54      388.8       2.572
+5000     24        12.8450     77.9       2.54      389.3       2.569
 
-10000    1         113.4400    8.8        1.00      88.2        11.344
-10000    4         51.6270     19.4       2.20      193.7       5.163
+10000    1         104.7395    9.5        1.00      95.5        10.474
+10000    2         62.1217     16.1       1.69      161.0       6.212
+10000    4         41.9782     23.8       2.50      238.2       4.198
+10000    24        41.7498     24.0       2.51      239.5       4.175
 
-single-boid throughput (best): 2.789 boids/us (0.359 us/boid) at 200 boids, 4 threads
+single-boid throughput (best): 2.648 boids/us (0.378 us/boid) at 200 boids, 4 threads
 ```
-
 Key takeaways:
 
 - **`us/boid`** is the per-boid cost per step in microseconds (inverse of the
-  single-boid throughput `boids/us`). It grows with density: in a fixed-size
-  world, more boids means more neighbors per boid, so the per-boid cost rises
-  from ~0.36 us (200 boids) to ~5.2 us (10k boids) at 4 threads.
-- **Parallel speedup plateaus around 2.3x at 4 threads.** The dependency graph has
-  exactly 4 parallel rule systems in phase 1, and the spatial grid rebuild plus
-  the 2-system phase 2 are serial, so more than ~4 worker threads cannot help.
-  This result is consistent with the amount of serial work in this workload.
+  single-boid throughput `boids/us`). It grows with density: ~0.38 us (200
+  boids) to ~4.2 us (10k boids) at 4 threads.
+- **Parallel speedup plateaus around 2.5x at 4 threads; 24 threads add nothing.**
+  The dependency graph has exactly 4 parallel rule systems in phase 1, while the
+  spatial grid rebuild and the 2-system phase 2 are serial. This matches the
+  serial fraction of the workload.
 - **Per-step cost grows super-linearly with boid count** in a fixed-size world:
-  doubling the boids doubles the density, so every boid finds more neighbors in
-  its radius (neighbor queries are O(n * avg-neighbors)).
-- 10k boids still runs at ~20 steps/s with 4 threads (~200k boids/s throughput);
-  200 boids run at ~14.5k steps/s.
-
+  doubling the boids doubles the density, so every boid finds more neighbors
+  (neighbor queries are O(n * avg-neighbors)).
+- 10k boids runs at ~24 steps/s with 4 threads (~238k boids/s throughput); 200
+  boids run at ~13.2k steps/s.
 ## Files
 
 - `boids.hpp` — components, config, spatial grid, six systems, `SpawnBoids` / `CountFlocks` (the core)

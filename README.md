@@ -69,13 +69,62 @@ int main() {
 }
 ```
 
+## Write it like C#
+
+For the 90% case, `World` exposes C#-style shortcuts so you do not have to spell
+out a full fluent query:
+
+```cpp
+world.RegisterComponents<Position, Velocity>();
+
+// Count entities that have all of these components
+std::size_t movers = world.Count<Position, Velocity>();
+
+// Update them in one call (C#: foreach (var e in view))
+world.ForEach<Position, Velocity>([](Position& p, Velocity& v) {
+    p.x += v.vx;
+    p.y += v.vy;
+});
+
+// Parallel scalar update
+ekit::ThreadPool pool(0); // 0 == hardware concurrency
+world.ForEachParallel<Position, Velocity>(pool, [](Position& p, Velocity& v) {
+    p.x += v.vx;
+});
+
+// SoA batch update (dense components only, raw aligned pointers)
+world.ForEachBatch<Position, Velocity>([](Position* p, Velocity* v, std::size_t n) {
+    for (std::size_t i = 0; i < n; ++i) {
+        p[i].x += v[i].vx;
+    }
+});
+```
+
+Every shortcut is literally `Query<Ts...>().Method(...)`, so you can always drop
+back to the full fluent chain (`Where` / `With` / `Without` / `Optional`) when you
+need filters:
+
+```cpp
+world.Query<Position, Velocity>()
+     .With<Renderable>()
+     .Without<Disabled>()
+     .Where([](Position&, Velocity&, Renderable&) { return true; })
+     .ForEach([](ekit::Entity e, Position& p, Velocity& v, Renderable&) {
+         // ...
+     });
+```
+
+A runnable tour of the ergonomic surface lives in
+[`examples/ergonomic.cpp`](examples/ergonomic.cpp); build it with the
+`ekit_ergonomic` target.
 ## Features
 
 - **Entity** — strong-typed, generation-based handle with dangling-handle safety
   (`Entity::Null`, `IsAlive`, automatic slot recycling with generation bumps).
 - **Component** — POD structs declaring `EKIT_COMPONENT(T)` inside the class body; explicit
-  `world.RegisterComponent<T>()`; sparse-set storage (cache-friendly dense arrays,
-  swap-and-pop removal).
+  `world.RegisterComponent<T>()` for dense archetype SoA storage, or
+  `world.RegisterSparseComponent<T>()` for per-type sparse sets (cache-friendly
+  dense arrays, swap-and-pop removal).
 - **World** — entity create/destroy, component `Add / Emplace / Set / Get / TryGet /
   Has / Remove / Patch / Clear`, named entities, batch registration, `ClearAll`.
 - **Query** — fluent queries with `Where / With / Without / Optional / ForEach / Count`,
@@ -94,6 +143,15 @@ int main() {
   ```
   Required components are passed by reference; optional components as pointers
   (`nullptr` when absent); the `Entity` handle is optional and comes first.
+- **Data-parallel query & thread pool** — `ekit::ThreadPool` plus
+  `Query::ForEachParallel(pool, fn)` split the smallest storage into chunks and run
+  them concurrently (dynamic atomic work stealing, so per-entity cost stays balanced).
+  The callback must only touch the entity's own components:
+  ```cpp
+  ekit::ThreadPool pool(0);                 // 0 == hardware concurrency
+  world.Query<Position, Velocity>()
+       .ForEachParallel(pool, [](Position& p, Velocity& v) { p.x += v.vx; });
+  ```
 - **System & Scheduler** — systems declare `Reads` / `Writes`; the scheduler builds a
   dependency DAG and executes independent systems in parallel on an internal thread pool:
   ```cpp
@@ -161,21 +219,22 @@ See [examples/boids/README.md](examples/boids/README.md) for details.
 
 Full conditions, raw data and the analysis scripts live in
 [`benchmarks/`](benchmarks/README.md). Headline results (Intel i7-14650HX, 24
-threads, MSVC Release /O2, world 800x600, seed 20260810):
+threads, MSVC Release /O2, world 800x600, seed 20260810, 120 timed steps + 20
+warmup):
 
 ### Per-step cost as boid count increases
 
 | from | to | x boids | x time | exponent |
 | --- | --- | --- | --- | --- |
-| 200 | 500 | 2.5x | 4.05x | 1.53 |
-| 1000 | 2000 | 2.0x | 3.07x | 1.62 |
-| 5000 | 10000 | 2.0x | 3.41x | 1.77 |
+| 200 | 500 | 2.5x | 4.82x | 1.72 |
+| 1000 | 2000 | 2.0x | 3.14x | 1.65 |
+| 5000 | 10000 | 2.0x | 3.26x | 1.71 |
 
-Per-step cost scales as n^1.5..n^1.8 and the exponent **rises toward 2 with
+Per-step cost scales as n^1.5..n^1.7 and the exponent **rises toward 2 with
 density**: the world is fixed, so doubling the boids doubles the density and
 the number of neighbors per boid - the neighbor search is O(n x neighbors),
-i.e. O(n^2) in the uniform-density limit. Throughput falls from ~2.7M boids/s
-(200 boids) to ~285k boids/s (10000 boids).
+i.e. O(n^2) in the uniform-density limit. Throughput falls from ~2.65M boids/s
+(200 boids) to ~238k boids/s (10000 boids).
 
 ![per-step cost vs boids](benchmarks/chart_cost_vs_boids.png)
 
@@ -183,22 +242,22 @@ i.e. O(n^2) in the uniform-density limit. Throughput falls from ~2.7M boids/s
 
 | boids | t2 | t4 | t24 |
 | --- | --- | --- | --- |
-| 200 | 1.32x | 1.94x | 1.96x |
-| 10000 | 1.69x | 2.23x | 2.44x |
+| 200 | 1.26x | 1.97x | 1.92x |
+| 10000 | 1.69x | 2.50x | 2.51x |
 
 In these measurements, speedup changes little beyond **4 threads**. The dependency
 graph has 4 parallel rule systems, while the grid rebuild and phase-2 chain are
-serial; the observed speedup is therefore ~2.2-2.9x rather than 4x.
+serial; the observed speedup is therefore ~2.0-2.5x rather than 4x.
 
 ![speedup vs threads](benchmarks/chart_speedup_vs_threads.png)
 
 ### ekit vs EnTT (same algorithm, EnTT v4)
 
-In this benchmark, ekit measures ~15-25% faster with one thread, while EnTT
-measures ~25-30% faster with four threads. The difference is consistent with
-their query iteration and parallelization strategies. Both implementations
-produce bit-identical simulation state for the tested workload.
-
+On this Windows/MSVC build, the ekit scheduler is ~20% slower than EnTT at 1
+thread and ~1.7-1.9x slower at 4 threads on dense workloads. The controlled
+data-parallel path `ekit-dp` (same chunking, same storage access, same component
+set) narrows the gap to ~1.1-1.13x at 4 threads. Both implementations produce
+bit-identical simulation state for the tested workload.
 ## Building & testing
 
 ```bash
@@ -210,19 +269,24 @@ ctest --test-dir build -C Release
 ## Unit tests
 
 `tests/tests.cpp` ships with the library and is run via `ctest`:
-**34 test cases / 269 assertions, all passing.** Coverage:
+**49 test cases / 307 assertions, all passing.** Coverage:
 
 | area | tests |
 | --- | --- |
-| Entity - generation, stale-handle safety, slot recycling, generation overflow | 5 |
+| Entity - generation, stale-handle safety, slot recycling | 5 |
 | Components - registration, CRUD, error paths, clear | 6 |
-| Queries - ForEach, Where, With/Without/Optional, const refs | 5 |
+| Queries - ForEach, Where, With/Without/Optional, const refs | 6 |
+| Parallel queries - ForEachParallel correctness, filters, deterministic writes | 3 |
+| SoA batch queries - ForEachBatch / ForEachBatchParallel | 3 |
+| World shortcuts - ForEach / ForEachParallel / ForEachBatch(Parallel) / Count | 3 |
 | Named entities | 1 |
-| Events - subscribe/emit, unsubscribe during emit | 3 |
+| Events - subscribe/emit, multiple handlers | 3 |
 | Systems & Scheduler - dependency ordering, parallelism, writer serialization, genuine-cycle detection | 6 |
 | Component declarations - traits, manual specialization | 2 |
+| Sparse components - basic CRUD, parallel queries | 2 |
+| Stream processing - ScratchSoa collect-then-batch | 3 |
 | Regression - destroy-then-iterate, free-slot access, mutation during iteration, generation overflow, self-unsubscribe, scheduler recovery after a task exception | 6 |
-| **Total** | **34 / 269** |
+| **Total** | **49 / 307** |
 
 Run them with:
 
@@ -238,21 +302,27 @@ cmake --build build --config Release --target ekit_tests
 include/ekit/
   core.hpp        exceptions, TypeList, type ids
   entity.hpp      Entity (generation-based handle)
-  component.hpp   EKIT_COMPONENT, ComponentStorage (sparse set)
-  query.hpp       fluent Query (Where / With / Without / Optional / ForEach)
-  world.hpp       World, component CRUD, named entities, events
+  component.hpp   EKIT_COMPONENT, Archetype (SoA) + ComponentStorage (sparse set)
+  query.hpp       fluent Query (Where / With / Without / Optional / ForEach / ForEachBatch / ForEachParallel)
+  stream.hpp      ScratchSoa<Ts...> collect-then-batch staging buffer
+  parallel.hpp    reusable ThreadPool + chunked ParallelFor
+  world.hpp       World, component CRUD, named entities, events, C#-style shortcuts
   system.hpp      system interface + Reads/Writes extraction
   scheduler.hpp   dependency-graph scheduler + thread pool
   ekit.hpp        unified entry point
-```
 
+examples/
+  basic.cpp       classic system/query simulation
+  ergonomic.cpp   the "write it like C#" tour
+  boids/          GLFW boids case study + EnTT comparison
+```
 ## Roadmap
 
-- [x] Entity / Component / World core (sparse-set storage)
+- [x] Entity / Component / World core (dense archetype SoA + sparse-set storage)
 - [x] Fluent Query with `Where / With / Without / Optional`
 - [x] System `Reads/Writes` + parallel Scheduler
 - [x] Event system (`Subscribe` / `Emit`)
-- [ ] Archetype chunks (SoA) as the next storage tier
+- [x] Archetype chunks (SoA) + stream/batch processing
 - [x] Unit tests + benchmark vs `entt`
 - [ ] CMake package config (`find_package(ekit)`)
 

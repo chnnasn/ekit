@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 // ekit Boids case study - simulation core.
 //
 // This file showcases the ekit ECS API:
@@ -29,6 +29,7 @@
 #include <ekit/ekit.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <numeric>
 #include <random>
@@ -162,6 +163,8 @@ public:
         cols_ = std::max(1, int(std::ceil(world_width / cell_size)));
         rows_ = std::max(1, int(std::ceil(world_height / cell_size)));
         cells_.assign(static_cast<std::size_t>(cols_) * rows_, {});
+        cell_count_.assign(cells_.size(), 0);
+        cell_cursor_.assign(cells_.size(), 0);
     }
 
     void Build(ekit::World& world) {
@@ -179,6 +182,45 @@ public:
                 std::sort(cell.begin(), cell.end());
             }
         }
+    }
+
+    // Parallel version of Build(). Uses a count -> prefix-sum -> scatter
+    // pipeline so every worker writes to disjoint slots, then sorts each cell
+    // by entity id. The sort makes the final cell contents independent of the
+    // (parallel) insertion order, so the result is bit-identical to Build().
+    void BuildParallel(ekit::ThreadPool& pool, ekit::World& world) {
+        const std::size_t cell_n = cells_.size();
+        for (auto& cell : cells_) {
+            cell.clear();
+        }
+        std::fill(cell_count_.begin(), cell_count_.end(), 0);
+
+        auto count_visitor = [&](ekit::Entity, const Position& p, const BoidTag&) {
+            const std::size_t ci = CellIndexOf(p);
+            std::atomic_ref<int>(cell_count_[ci]).fetch_add(1, std::memory_order_relaxed);
+        };
+        world.Query<Position, BoidTag>().ForEachParallel(pool, count_visitor);
+
+        for (std::size_t ci = 0; ci < cell_n; ++ci) {
+            cells_[ci].resize(static_cast<std::size_t>(cell_count_[ci]));
+            cell_cursor_[ci] = 0;
+        }
+
+        auto scatter_visitor = [&](ekit::Entity e, const Position& p, const BoidTag&) {
+            const std::size_t ci = CellIndexOf(p);
+            const std::size_t slot = static_cast<std::size_t>(
+                std::atomic_ref<int>(cell_cursor_[ci]).fetch_add(1, std::memory_order_relaxed));
+            cells_[ci][slot] = e;
+        };
+        world.Query<Position, BoidTag>().ForEachParallel(pool, scatter_visitor);
+
+        ekit::detail::ParallelFor(pool, cell_n, [&](std::size_t begin, std::size_t end) {
+            for (std::size_t ci = begin; ci < end; ++ci) {
+                if (cells_[ci].size() > 1) {
+                    std::sort(cells_[ci].begin(), cells_[ci].end());
+                }
+            }
+        });
     }
 
     // Calls fn(entity) for every entity within `radius` of `center`.
@@ -211,12 +253,20 @@ private:
         return v < lo ? lo : (v > hi ? hi : v);
     }
 
+    std::size_t CellIndexOf(const Position& p) const {
+        const int cx = Clamp(int(p.x / cell_size_), 0, cols_ - 1);
+        const int cy = Clamp(int(p.y / cell_size_), 0, rows_ - 1);
+        return static_cast<std::size_t>(cy) * cols_ + cx;
+    }
+
     float cell_size_ = 0.f;
     float world_width_ = 0.f;
     float world_height_ = 0.f;
     int cols_ = 0;
     int rows_ = 0;
     std::vector<std::vector<ekit::Entity>> cells_;
+    std::vector<int> cell_count_;
+    std::vector<int> cell_cursor_;
 };
 
 // ---------------------------------------------------------------------------
@@ -230,33 +280,39 @@ struct SeparationSystem {
 
     const SpatialGrid* grid = nullptr;
     float radius = 26.f;
+    ekit::ThreadPool* pool = nullptr;
 
     void Execute(ekit::World& world) {
-        world.Query<Position, Separation, BoidTag>().ForEach(
-            [&](ekit::Entity e, const Position& p, Separation& s, const BoidTag&) {
-                float sx = 0.f;
-                float sy = 0.f;
-                grid->ForEachNeighbor(world, p, radius, [&](ekit::Entity n) {
-                    if (n == e) {
-                        return;
-                    }
-                    const Position* np = world.TryGet<Position>(n);
-                    if (np == nullptr) {
-                        return;
-                    }
-                    const float dx = p.x - np->x;
-                    const float dy = p.y - np->y;
-                    const float d2 = dx * dx + dy * dy;
-                    if (d2 < radius * radius && d2 > 1e-4f) {
-                        const float d = std::sqrt(d2);
-                        const float strength = 1.f - d / radius; // closer => stronger push
-                        sx += (dx / d) * strength;
-                        sy += (dy / d) * strength;
-                    }
-                });
-                s.x = sx;
-                s.y = sy;
+        auto body = [&](ekit::Entity e, const Position& p, Separation& s, const BoidTag&) {
+            float sx = 0.f;
+            float sy = 0.f;
+            grid->ForEachNeighbor(world, p, radius, [&](ekit::Entity n) {
+                if (n == e) {
+                    return;
+                }
+                const Position* np = world.TryGet<Position>(n);
+                if (np == nullptr) {
+                    return;
+                }
+                const float dx = p.x - np->x;
+                const float dy = p.y - np->y;
+                const float d2 = dx * dx + dy * dy;
+                if (d2 < radius * radius && d2 > 1e-4f) {
+                    const float d = std::sqrt(d2);
+                    const float strength = 1.f - d / radius; // closer => stronger push
+                    sx += (dx / d) * strength;
+                    sy += (dy / d) * strength;
+                }
             });
+            s.x = sx;
+            s.y = sy;
+        };
+        auto query = world.Query<Position, Separation, BoidTag>();
+        if (pool) {
+            query.ForEachParallel(*pool, body);
+        } else {
+            query.ForEach(body);
+        }
     }
 };
 
@@ -267,33 +323,40 @@ struct AlignmentSystem {
 
     const SpatialGrid* grid = nullptr;
     float radius = 48.f;
+    ekit::ThreadPool* pool = nullptr;
 
     void Execute(ekit::World& world) {
-        world.Query<Position, Velocity, Alignment, BoidTag>().ForEach(
-            [&](ekit::Entity e, const Position& p, const Velocity&, Alignment& a, const BoidTag&) {
-                float ax = 0.f;
-                float ay = 0.f;
-                int count = 0;
-                grid->ForEachNeighbor(world, p, radius, [&](ekit::Entity n) {
-                    if (n == e) {
-                        return;
-                    }
-                    const Velocity* nv = world.TryGet<Velocity>(n);
-                    if (nv == nullptr) {
-                        return;
-                    }
-                    ax += nv->x;
-                    ay += nv->y;
-                    ++count;
-                });
-                if (count > 0) {
-                    a.x = ax / static_cast<float>(count);
-                    a.y = ay / static_cast<float>(count);
-                } else {
-                    a.x = 0.f;
-                    a.y = 0.f;
+        auto body = [&](ekit::Entity e, const Position& p, const Velocity&, Alignment& a,
+                        const BoidTag&) {
+            float ax = 0.f;
+            float ay = 0.f;
+            int count = 0;
+            grid->ForEachNeighbor(world, p, radius, [&](ekit::Entity n) {
+                if (n == e) {
+                    return;
                 }
+                const Velocity* nv = world.TryGet<Velocity>(n);
+                if (nv == nullptr) {
+                    return;
+                }
+                ax += nv->x;
+                ay += nv->y;
+                ++count;
             });
+            if (count > 0) {
+                a.x = ax / static_cast<float>(count);
+                a.y = ay / static_cast<float>(count);
+            } else {
+                a.x = 0.f;
+                a.y = 0.f;
+            }
+        };
+        auto query = world.Query<Position, Velocity, Alignment, BoidTag>();
+        if (pool) {
+            query.ForEachParallel(*pool, body);
+        } else {
+            query.ForEach(body);
+        }
     }
 };
 
@@ -304,33 +367,39 @@ struct CohesionSystem {
 
     const SpatialGrid* grid = nullptr;
     float radius = 48.f;
+    ekit::ThreadPool* pool = nullptr;
 
     void Execute(ekit::World& world) {
-        world.Query<Position, Cohesion, BoidTag>().ForEach(
-            [&](ekit::Entity e, const Position& p, Cohesion& c, const BoidTag&) {
-                float cx = 0.f;
-                float cy = 0.f;
-                int count = 0;
-                grid->ForEachNeighbor(world, p, radius, [&](ekit::Entity n) {
-                    if (n == e) {
-                        return;
-                    }
-                    const Position* np = world.TryGet<Position>(n);
-                    if (np == nullptr) {
-                        return;
-                    }
-                    cx += np->x;
-                    cy += np->y;
-                    ++count;
-                });
-                if (count > 0) {
-                    c.x = (cx / static_cast<float>(count)) - p.x;
-                    c.y = (cy / static_cast<float>(count)) - p.y;
-                } else {
-                    c.x = 0.f;
-                    c.y = 0.f;
+        auto body = [&](ekit::Entity e, const Position& p, Cohesion& c, const BoidTag&) {
+            float cx = 0.f;
+            float cy = 0.f;
+            int count = 0;
+            grid->ForEachNeighbor(world, p, radius, [&](ekit::Entity n) {
+                if (n == e) {
+                    return;
                 }
+                const Position* np = world.TryGet<Position>(n);
+                if (np == nullptr) {
+                    return;
+                }
+                cx += np->x;
+                cy += np->y;
+                ++count;
             });
+            if (count > 0) {
+                c.x = (cx / static_cast<float>(count)) - p.x;
+                c.y = (cy / static_cast<float>(count)) - p.y;
+            } else {
+                c.x = 0.f;
+                c.y = 0.f;
+            }
+        };
+        auto query = world.Query<Position, Cohesion, BoidTag>();
+        if (pool) {
+            query.ForEachParallel(*pool, body);
+        } else {
+            query.ForEach(body);
+        }
     }
 };
 
@@ -341,27 +410,33 @@ struct UpdateVelocitySystem {
     using Writes = ekit::TypeList<Velocity>;
 
     Config cfg;
+    ekit::ThreadPool* pool = nullptr;
 
     void Execute(ekit::World& world) {
-        world.Query<Velocity, Separation, Alignment, Cohesion, BoundsSteer, MouseSteer, BoidTag>()
-            .ForEach([&](ekit::Entity, Velocity& v, const Separation& s, const Alignment& a,
-                         const Cohesion& c, const BoundsSteer& b, const MouseSteer& m,
-                         const BoidTag&) {
-                v.x += s.x * cfg.separation_weight + a.x * cfg.alignment_weight +
-                       c.x * cfg.cohesion_weight + b.x * cfg.edge_steer + m.x;
-                v.y += s.y * cfg.separation_weight + a.y * cfg.alignment_weight +
-                       c.y * cfg.cohesion_weight + b.y * cfg.edge_steer + m.y;
+        auto body = [&](ekit::Entity, Velocity& v, const Separation& s, const Alignment& a,
+                        const Cohesion& c, const BoundsSteer& b, const MouseSteer& m,
+                        const BoidTag&) {
+            v.x += s.x * cfg.separation_weight + a.x * cfg.alignment_weight +
+                   c.x * cfg.cohesion_weight + b.x * cfg.edge_steer + m.x;
+            v.y += s.y * cfg.separation_weight + a.y * cfg.alignment_weight +
+                   c.y * cfg.cohesion_weight + b.y * cfg.edge_steer + m.y;
 
-                // Clamp speed to [min_speed, max_speed].
-                const float speed = std::sqrt(v.x * v.x + v.y * v.y);
-                if (speed > cfg.max_speed) {
-                    v.x *= cfg.max_speed / speed;
-                    v.y *= cfg.max_speed / speed;
-                } else if (speed < cfg.min_speed && speed > 1e-4f) {
-                    v.x *= cfg.min_speed / speed;
-                    v.y *= cfg.min_speed / speed;
-                }
-            });
+            // Clamp speed to [min_speed, max_speed].
+            const float speed = std::sqrt(v.x * v.x + v.y * v.y);
+            if (speed > cfg.max_speed) {
+                v.x *= cfg.max_speed / speed;
+                v.y *= cfg.max_speed / speed;
+            } else if (speed < cfg.min_speed && speed > 1e-4f) {
+                v.x *= cfg.min_speed / speed;
+                v.y *= cfg.min_speed / speed;
+            }
+        };
+        auto query = world.Query<Velocity, Separation, Alignment, Cohesion, BoundsSteer, MouseSteer, BoidTag>();
+        if (pool) {
+            query.ForEachParallel(*pool, body);
+        } else {
+            query.ForEach(body);
+        }
     }
 };
 
@@ -412,29 +487,35 @@ struct BoundsSystem {
 
     const WorldBounds* bounds = nullptr; // live viewer: follows the window size
     Config cfg;
+    ekit::ThreadPool* pool = nullptr;
 
     void Execute(ekit::World& world) {
         const float world_w =
             (bounds != nullptr && bounds->width > 0.f) ? bounds->width : static_cast<float>(cfg.width);
         const float world_h =
             (bounds != nullptr && bounds->height > 0.f) ? bounds->height : static_cast<float>(cfg.height);
-        world.Query<Position, BoundsSteer, BoidTag>().ForEach(
-            [&](ekit::Entity, const Position& p, BoundsSteer& b, const BoidTag&) {
-                float sx = 0.f;
-                float sy = 0.f;
-                if (p.x < cfg.edge_margin) {
-                    sx = (cfg.edge_margin - p.x) / cfg.edge_margin;
-                } else if (p.x > world_w - cfg.edge_margin) {
-                    sx = (world_w - cfg.edge_margin - p.x) / cfg.edge_margin;
-                }
-                if (p.y < cfg.edge_margin) {
-                    sy = (cfg.edge_margin - p.y) / cfg.edge_margin;
-                } else if (p.y > world_h - cfg.edge_margin) {
-                    sy = (world_h - cfg.edge_margin - p.y) / cfg.edge_margin;
-                }
-                b.x = sx;
-                b.y = sy;
-            });
+        auto body = [&](ekit::Entity, const Position& p, BoundsSteer& b, const BoidTag&) {
+            float sx = 0.f;
+            float sy = 0.f;
+            if (p.x < cfg.edge_margin) {
+                sx = (cfg.edge_margin - p.x) / cfg.edge_margin;
+            } else if (p.x > world_w - cfg.edge_margin) {
+                sx = (world_w - cfg.edge_margin - p.x) / cfg.edge_margin;
+            }
+            if (p.y < cfg.edge_margin) {
+                sy = (cfg.edge_margin - p.y) / cfg.edge_margin;
+            } else if (p.y > world_h - cfg.edge_margin) {
+                sy = (world_h - cfg.edge_margin - p.y) / cfg.edge_margin;
+            }
+            b.x = sx;
+            b.y = sy;
+        };
+        auto query = world.Query<Position, BoundsSteer, BoidTag>();
+        if (pool) {
+            query.ForEachParallel(*pool, body);
+        } else {
+            query.ForEach(body);
+        }
     }
 };
 
@@ -445,13 +526,19 @@ struct IntegrateSystem {
     using Writes = ekit::TypeList<Position>;
 
     Config cfg;
+    ekit::ThreadPool* pool = nullptr;
 
     void Execute(ekit::World& world) {
-        world.Query<Position, Velocity, BoidTag>().ForEach(
-            [&](ekit::Entity, Position& p, const Velocity& v, const BoidTag&) {
-                p.x += v.x * cfg.dt;
-                p.y += v.y * cfg.dt;
-            });
+        auto body = [&](ekit::Entity, Position& p, const Velocity& v, const BoidTag&) {
+            p.x += v.x * cfg.dt;
+            p.y += v.y * cfg.dt;
+        };
+        auto query = world.Query<Position, Velocity, BoidTag>();
+        if (pool) {
+            query.ForEachParallel(*pool, body);
+        } else {
+            query.ForEach(body);
+        }
     }
 };
 

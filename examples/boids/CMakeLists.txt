@@ -1,4 +1,4 @@
-﻿# ekit Boids case study - build targets.
+# ekit Boids case study - build targets.
 
 # Headless demo: runs the simulation and writes PPM frames (render.ps1 converts
 # them to PNG / animated GIF).
@@ -10,6 +10,13 @@ target_compile_features(ekit_boids PRIVATE cxx_std_20)
 add_executable(ekit_boids_bench bench.cpp)
 target_link_libraries(ekit_boids_bench PRIVATE ekit)
 target_compile_features(ekit_boids_bench PRIVATE cxx_std_20)
+
+# Data-parallel benchmark: compares the original scheduler-based execution
+# against Query::ForEachParallel + parallel grid rebuild, and verifies both
+# produce bit-identical simulation state.
+add_executable(ekit_boids_bench_parallel bench_parallel.cpp)
+target_link_libraries(ekit_boids_bench_parallel PRIVATE ekit)
+target_compile_features(ekit_boids_bench_parallel PRIVATE cxx_std_20)
 
 # ekit vs EnTT comparison: the SAME boids algorithm on both ECS libraries.
 # EnTT is NOT part of this repository - point ENTT_ROOT at a local checkout,
@@ -25,6 +32,36 @@ if (EKIT_BUILD_ENTT_COMPARE AND EXISTS "${ENTT_ROOT}/single_include/entt/entt.hp
         target_compile_options(ekit_entt_compare PRIVATE /O2)
     else()
         target_compile_options(ekit_entt_compare PRIVATE -O2)
+    endif()
+
+    add_executable(ekit_stream_compare stream_compare.cpp)
+    target_link_libraries(ekit_stream_compare PRIVATE ekit)
+    target_include_directories(ekit_stream_compare PRIVATE "${ENTT_ROOT}/single_include")
+    target_compile_features(ekit_stream_compare PRIVATE cxx_std_20)
+    if (MSVC)
+        target_compile_options(ekit_stream_compare PRIVATE /O2)
+    else()
+        target_compile_options(ekit_stream_compare PRIVATE -O2)
+    endif()
+
+    add_executable(ekit_comprehensive_compare comprehensive_compare.cpp)
+    target_link_libraries(ekit_comprehensive_compare PRIVATE ekit)
+    target_include_directories(ekit_comprehensive_compare PRIVATE "${ENTT_ROOT}/single_include")
+    target_compile_features(ekit_comprehensive_compare PRIVATE cxx_std_20)
+    if (MSVC)
+        target_compile_options(ekit_comprehensive_compare PRIVATE /O2)
+    else()
+        target_compile_options(ekit_comprehensive_compare PRIVATE -O2)
+    endif()
+
+    add_executable(ekit_native_compare native_compare.cpp)
+    target_link_libraries(ekit_native_compare PRIVATE ekit)
+    target_include_directories(ekit_native_compare PRIVATE "${ENTT_ROOT}/single_include")
+    target_compile_features(ekit_native_compare PRIVATE cxx_std_20)
+    if (MSVC)
+        target_compile_options(ekit_native_compare PRIVATE /O2)
+    else()
+        target_compile_options(ekit_native_compare PRIVATE -O2)
     endif()
 else()
     message(STATUS "ekit_entt_compare skipped: configure with -DENTT_ROOT=<local EnTT checkout>")
@@ -54,12 +91,14 @@ endif()
 if (MSVC)
     target_compile_options(ekit_boids PRIVATE /O2 /W4 /WX)
     target_compile_options(ekit_boids_bench PRIVATE /O2 /W4 /WX)
+    target_compile_options(ekit_boids_bench_parallel PRIVATE /O2 /W4 /WX)
     if (TARGET ekit_boids_live)
         target_compile_options(ekit_boids_live PRIVATE /O2 /W4 /WX)
     endif()
 else()
     target_compile_options(ekit_boids PRIVATE -O2 -Wall -Wextra -Werror)
     target_compile_options(ekit_boids_bench PRIVATE -O2 -Wall -Wextra -Werror)
+    target_compile_options(ekit_boids_bench_parallel PRIVATE -O2 -Wall -Wextra -Werror)
     if (TARGET ekit_boids_live)
         target_compile_options(ekit_boids_live PRIVATE -O2 -Wall -Wextra -Werror)
     endif()

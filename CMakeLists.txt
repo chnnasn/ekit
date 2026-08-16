@@ -1,4 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.14)
+cmake_minimum_required(VERSION 3.14)
 project(ekit VERSION 0.1.0 LANGUAGES CXX)
 
 option(EKIT_BUILD_TESTS "Build the ekit test suite" ON)
@@ -30,6 +30,9 @@ target_link_libraries(ekit INTERFACE Threads::Threads)
 if (EKIT_BUILD_EXAMPLES)
     add_executable(ekit_basic examples/basic.cpp)
     target_link_libraries(ekit_basic PRIVATE ekit)
+
+    add_executable(ekit_ergonomic examples/ergonomic.cpp)
+    target_link_libraries(ekit_ergonomic PRIVATE ekit)
 endif()
 
 # ---------------------------------------------------------------------------

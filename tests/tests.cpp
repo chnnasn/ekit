@@ -1,4 +1,4 @@
-﻿// ekit test suite.
+// ekit test suite.
 #include <ekit/ekit.hpp>
 
 #include "test_framework.hpp"
@@ -294,6 +294,29 @@ TEST(query_where_filter) {
                  .Where([](Position&, Velocity& v) { return v.vx > 3.f; })
                  .Count()),
              2u);
+}
+
+TEST(query_where_chaining_and_capture) {
+    ekit::World world;
+    world.RegisterComponents<Position, Velocity>();
+
+    for (int i = 1; i <= 5; ++i) {
+        ekit::Entity e = world.Create();
+        world.Add<Position>(e, float(i), 0.f);
+        world.Add<Velocity>(e, float(i), 0.f);
+    }
+
+    // Capturing predicates must not require default-construction, and chained
+    // Where filters must combine with logical AND.
+    float threshold = 3.f;
+    int count = 0;
+    float sum = 0.f;
+    world.Query<Position, Velocity>()
+        .Where([&](Position&, Velocity& v) { return v.vx > threshold; })
+        .Where([](Position& p, Velocity&) { return p.x < 5.f; })
+        .ForEach([&](Position& p, Velocity&) { ++count; sum += p.x; });
+    CHECK_EQ(count, 1);
+    CHECK_EQ(sum, 4.f);
 }
 
 TEST(query_with_without_optional) {
@@ -702,8 +725,8 @@ TEST(regression_query_after_destroy) {
         [&](const Position& p, const Velocity&) { ++seen; sum += p.x; });
     CHECK_EQ(seen, 6);
     CHECK_EQ(sum, 4.f + 5.f + 6.f + 7.f + 8.f + 9.f);
-    CHECK_EQ(world.GetStorage<Position>().Size(), 6u);
-    CHECK_EQ(world.GetStorage<Velocity>().Size(), 6u);
+    CHECK_EQ(world.Query<Position>().Count(), 6u);
+    CHECK_EQ(world.Query<Velocity>().Count(), 6u);
     CHECK_EQ(world.GetAliveEntityCount(), 6u);
 }
 
@@ -739,13 +762,13 @@ TEST(regression_free_slot_access) {
     CHECK_EQ(world.Get<Position>(fresh).x, 9.f);
     CHECK(!world.Has<Position>(e));
     CHECK(world.TryGet<Position>(e) == nullptr);
-    CHECK(world.GetStorage<Position>().Contains(idx));
+    CHECK(world.Has<Position>(fresh));
 }
 
 // Adding/removing components during iteration:
-//  * touching storages that are NOT the one being iterated is safe;
-//  * removing the iterated component itself must be deferred until after the
-//    loop (sparse-set swap-and-pop would invalidate the iteration).
+//  * archetype storage moves an entity to a different archetype on ANY
+//    Add/Remove, so structural changes MUST be deferred until after the loop;
+//  * in-place writes to the iterated components are still safe mid-iteration.
 TEST(regression_mutate_components_during_iteration) {
     ekit::World world;
     world.RegisterComponents<Position, Velocity, Health>();
@@ -756,26 +779,161 @@ TEST(regression_mutate_components_during_iteration) {
         world.Add<Health>(e, 100);
     }
 
-    std::vector<ekit::Entity> defer_remove;
+    std::vector<ekit::Entity> all;
+    std::vector<ekit::Entity> defer_remove_health;
+    std::vector<ekit::Entity> defer_remove_position;
     world.Query<Position>().ForEach([&](ekit::Entity e, Position& p) {
-        // Mutating a different storage mid-iteration is safe.
-        world.Add<Velocity>(e, p.x, p.x);
+        all.push_back(e);
         if (e.GetIndex() % 2 == 0) {
-            world.Remove<Health>(e);
+            defer_remove_health.push_back(e);
         }
-        // Removing the iterated component is deferred until after the loop.
         if (p.x > 2.f) {
-            defer_remove.push_back(e);
+            defer_remove_position.push_back(e);
         }
     });
 
-    for (ekit::Entity e : defer_remove) {
+    for (ekit::Entity e : all) {
+        world.Add<Velocity>(e, 1.f, 1.f);
+    }
+    for (ekit::Entity e : defer_remove_health) {
+        world.Remove<Health>(e);
+    }
+    for (ekit::Entity e : defer_remove_position) {
         world.Remove<Position>(e);
     }
 
     CHECK_EQ(world.Query<Position>().Count(), 3u);
     CHECK_EQ(world.Query<Velocity>().Count(), 5u);
     CHECK_EQ(world.Query<Health>().Count(), 3u); // even indices 2 and 4 removed
+}
+
+TEST(scratch_soa_collect_then_batch) {
+    ekit::ScratchSoa<ekit::EntityId, float, float, float, float> scratch;
+    scratch.Reserve(4);
+
+    // Phase 1 (collect): append records into contiguous SoA columns.
+    scratch.Append(ekit::EntityId{1}, 1.f, 2.f, 3.f, 4.f);
+    scratch.Append(ekit::EntityId{2}, 5.f, 6.f, 7.f, 8.f);
+    scratch.Append(ekit::EntityId{3}, 9.f, 10.f, 11.f, 12.f);
+    CHECK_EQ(scratch.Size(), 3u);
+
+    // Phase 2 (batch): aligned SoA pointers, same index = same record.
+    float sum = 0.f;
+    scratch.ForEachBatch([&](ekit::EntityId* ids, float* a, float* b, float* c, float* d,
+                             std::size_t n) {
+        for (std::size_t i = 0; i < n; ++i) {
+            sum += a[i] + b[i] + c[i] + d[i] + static_cast<float>(ids[i]);
+        }
+    });
+    CHECK_EQ(sum, (1 + 2 + 3 + 4 + 1.f) + (5 + 6 + 7 + 8 + 2.f) + (9 + 10 + 11 + 12 + 3.f));
+
+    scratch.Clear();
+    CHECK_EQ(scratch.Size(), 0u);
+    scratch.Append(ekit::EntityId{7}, 1.f, 1.f, 1.f, 1.f);
+    CHECK_EQ(scratch.Size(), 1u);
+}
+
+TEST(scratch_soa_batch_parallel) {
+    const std::size_t N = 1000;
+    ekit::ScratchSoa<ekit::EntityId, float> scratch;
+    scratch.Reserve(N);
+    for (std::size_t i = 0; i < N; ++i) {
+        scratch.Append(ekit::EntityId{static_cast<ekit::EntityId>(i + 1)}, 1.f);
+    }
+
+    ekit::ThreadPool pool(4);
+    std::atomic<float> total{0.f};
+    scratch.ForEachBatchParallel(
+        pool,
+        [&](ekit::EntityId*, float* v, std::size_t n) {
+            float local = 0.f;
+            for (std::size_t i = 0; i < n; ++i) {
+                local += v[i];
+            }
+            total.fetch_add(local, std::memory_order_relaxed);
+        },
+        64);
+    CHECK_EQ(total.load(), static_cast<float>(N));
+}
+
+TEST(scratch_soa_collect_once_consume_many) {
+    // The stream pattern's real win: gather once, consume many times without
+    // re-doing the (random) gather.
+    const std::size_t N = 1000;
+    ekit::ScratchSoa<ekit::EntityId, float, float> scratch;
+    scratch.Reserve(N);
+    for (std::size_t i = 0; i < N; ++i) {
+        scratch.Append(ekit::EntityId{static_cast<ekit::EntityId>(i + 1)},
+                       static_cast<float>(i), static_cast<float>(i * 2));
+    }
+
+    float sum_x = 0.f, sum_y = 0.f, sum_xy = 0.f;
+    scratch.ForEachBatch([&](ekit::EntityId*, float* x, float* y, std::size_t n) {
+        for (std::size_t i = 0; i < n; ++i) {
+            sum_x += x[i];
+            sum_y += y[i];
+            sum_xy += x[i] * y[i];
+        }
+    });
+    const float expected_x = static_cast<float>((N - 1) * N / 2);
+    CHECK_EQ(sum_x, expected_x);
+    CHECK_EQ(sum_y, expected_x * 2.f);
+}
+
+TEST(sparse_component_basic) {
+    ekit::World world;
+    world.RegisterComponent<Position>();       // dense (archetype)
+    world.RegisterSparseComponent<Health>();   // sparse (sparse set)
+
+    ekit::Entity e = world.Create();
+    world.Add<Position>(e, 1.f, 2.f);
+    world.Add<Health>(e, 50);
+
+    CHECK(world.IsSparseComponent<Health>());
+    CHECK(!world.IsSparseComponent<Position>());
+    CHECK(world.Has<Position>(e));
+    CHECK(world.Has<Health>(e));
+    CHECK_EQ(world.Get<Health>(e).hp, 50);
+    CHECK(world.TryGet<Health>(e) != nullptr);
+
+    // mixed query: dense Position + sparse Health, fetched transparently
+    int total = 0;
+    world.Query<Position, Health>().ForEach([&](const Position&, const Health& h) { total += h.hp; });
+    CHECK_EQ(total, 50);
+
+    // sparse Optional
+    int opt = 0;
+    world.Query<Position>().Optional<Health>().ForEach(
+        [&](const Position&, const Health* h) { opt += h ? h->hp : 0; });
+    CHECK_EQ(opt, 50);
+
+    // sparse Without
+    CHECK_EQ(world.Query<Position>().Without<Health>().Count(), 0u);
+    CHECK_EQ(world.Query<Position>().Count(), 1u);
+
+    // sparse Remove + Set
+    CHECK(world.Remove<Health>(e));
+    CHECK(!world.Has<Health>(e));
+    world.Set<Health>(e, 99);
+    CHECK_EQ(world.Get<Health>(e).hp, 99);
+}
+
+TEST(sparse_component_parallel_query) {
+    ekit::World world;
+    world.RegisterComponent<Position>();
+    world.RegisterSparseComponent<Health>();
+    for (int i = 0; i < 1000; ++i) {
+        ekit::Entity e = world.Create();
+        world.Add<Position>(e, 0.f, 0.f);
+        if (i % 2 == 0) {
+            world.Add<Health>(e, 1);
+        }
+    }
+    ekit::ThreadPool pool(4);
+    std::atomic<int> count{0};
+    world.Query<Position, Health>().ForEachParallel(
+        pool, [&](const Position&, const Health&) { count.fetch_add(1, std::memory_order_relaxed); });
+    CHECK_EQ(count.load(), 500);
 }
 
 // Wrapping the 16-bit generation counter: the wrapped slot must be permanently
@@ -876,6 +1034,312 @@ TEST(regression_scheduler_recover_after_task_exception) {
     sched2.Run(world);
     CHECK_EQ(counts.load(), 3);
 }
+
+// ---------------------------------------------------------------------------
+// Parallel query (ForEachParallel)
+// ---------------------------------------------------------------------------
+
+TEST(query_foreach_parallel_matches_serial) {
+    ekit::World world;
+    world.RegisterComponents<Position, Velocity>();
+
+    for (int i = 0; i < 2000; ++i) {
+        ekit::Entity e = world.Create();
+        world.Add<Position>(e, static_cast<float>(i % 100), static_cast<float>(i / 100));
+        world.Add<Velocity>(e, 1.5f, 2.5f);
+    }
+
+    ekit::ThreadPool pool(4);
+
+    std::atomic<long long> parallel_sum{0};
+    world.Query<Position, Velocity>().ForEachParallel(
+        pool, [&](Position& p, Velocity& v) {
+            parallel_sum.fetch_add(static_cast<long long>(p.x + v.vx),
+                                   std::memory_order_relaxed);
+        });
+
+    long long serial_sum = 0;
+    world.Query<Position, Velocity>().ForEach(
+        [&](Position& p, Velocity& v) {
+            serial_sum += static_cast<long long>(p.x + v.vx);
+        });
+
+    CHECK_EQ(parallel_sum.load(), serial_sum);
+}
+
+TEST(query_foreach_parallel_respects_filters) {
+    ekit::World world;
+    world.RegisterComponents<Position, Velocity, Health, Tag>();
+
+    int with_tag = 0;
+    for (int i = 0; i < 1000; ++i) {
+        ekit::Entity e = world.Create();
+        world.Add<Position>(e, static_cast<float>(i), 0.f);
+        world.Add<Velocity>(e, 1.f, 0.f);
+        if (i % 2 == 0) {
+            world.Add<Tag>(e);
+            ++with_tag;
+        }
+    }
+
+    ekit::ThreadPool pool(4);
+
+    std::atomic<int> parallel_count{0};
+    world.Query<Position, Velocity>().With<Tag>().Without<Health>().ForEachParallel(
+        pool, [&](Position&, Velocity&, Tag&) {
+            parallel_count.fetch_add(1, std::memory_order_relaxed);
+        });
+
+    CHECK_EQ(parallel_count.load(), with_tag);
+}
+
+TEST(query_foreach_parallel_deterministic_write) {
+    auto build = [](ekit::World& world) {
+        world.RegisterComponents<Position, Velocity>();
+        for (int i = 0; i < 1000; ++i) {
+            ekit::Entity e = world.Create();
+            world.Add<Position>(e, static_cast<float>(i % 31), static_cast<float>(i % 17));
+            world.Add<Velocity>(e, 0.25f, 0.75f);
+        }
+    };
+
+    ekit::World serial_world;
+    ekit::World parallel_world;
+    build(serial_world);
+    build(parallel_world);
+
+    serial_world.Query<Position, Velocity>().ForEach(
+        [](Position& p, Velocity& v) { p.x += v.vx; p.y += v.vy; });
+
+    ekit::ThreadPool pool(4);
+    parallel_world.Query<Position, Velocity>().ForEachParallel(
+        pool, [](Position& p, Velocity& v) { p.x += v.vx; p.y += v.vy; });
+
+    bool same = true;
+    for (std::size_t i = 0; i < 1000; ++i) {
+        const ekit::Entity e = serial_world.GetEntity(static_cast<ekit::EntityId>(i + 1));
+        const Position& sp = serial_world.Get<Position>(e);
+        const Position& pp = parallel_world.Get<Position>(e);
+        same = same && (sp.x == pp.x) && (sp.y == pp.y);
+    }
+    CHECK(same);
+}
+
+TEST(query_foreach_batch) {
+    ekit::World world;
+    world.RegisterComponents<Position, Velocity>();
+    for (int i = 0; i < 100; ++i) {
+        ekit::Entity e = world.Create();
+        world.Add<Position>(e, static_cast<float>(i), 0.f);
+        world.Add<Velocity>(e, 1.f, 1.f);
+    }
+
+    // Batch integrate: aligned SoA pointers, p[i] and v[i] are the same entity.
+    world.Query<Position, Velocity>().ForEachBatch(
+        [](Position* p, Velocity* v, std::size_t n) {
+            for (std::size_t i = 0; i < n; ++i) {
+                p[i].x += v[i].vx * 2.f;
+                p[i].y += v[i].vy * 2.f;
+            }
+        });
+
+    float sum = 0.f;
+    world.Query<Position>().ForEach([&](const Position& p) { sum += p.x; });
+    // initial x sum = 0 + ... + 99 = 4950; +2 each = +200 -> 5150
+    CHECK_EQ(sum, 5150.f);
+
+    // Entity-id-first signature, with an explicit batch size.
+    std::size_t seen = 0;
+    world.Query<Position, Velocity>().ForEachBatch(
+        [&](ekit::EntityId* ids, Position* p, Velocity* v, std::size_t n) {
+            for (std::size_t i = 0; i < n; ++i) {
+                if (ids[i] != 0 && p[i].y == v[i].vy * 2.f) {
+                    ++seen;
+                }
+            }
+        },
+        32);
+    CHECK_EQ(seen, 100u);
+}
+
+TEST(query_foreach_batch_rejects_sparse_excluded) {
+    ekit::World world;
+    world.RegisterComponent<Position>();
+    world.RegisterSparseComponent<Tag>();
+
+    ekit::Entity e = world.Create();
+    world.Add<Position>(e, 0.f, 0.f);
+    world.Add<Tag>(e);
+
+    // Batch iteration hands out contiguous dense SoA pointers and cannot apply
+    // a per-entity sparse exclusion, so this must fail loudly instead of
+    // silently returning the excluded entity.
+    auto batch = [](Position*, std::size_t) {};
+    CHECK_THROWS_AS(world.Query<Position>().Without<Tag>().ForEachBatch(batch),
+                    ekit::EkitException);
+}
+
+TEST(query_foreach_batch_parallel) {
+    ekit::World world;
+    world.RegisterComponents<Position, Velocity>();
+    for (int i = 0; i < 1000; ++i) {
+        ekit::Entity e = world.Create();
+        world.Add<Position>(e, static_cast<float>(i % 31), static_cast<float>(i % 17));
+        world.Add<Velocity>(e, 0.25f, 0.75f);
+    }
+
+    ekit::ThreadPool pool(4);
+    world.Query<Position, Velocity>().ForEachBatchParallel(
+        pool, [](Position* p, Velocity* v, std::size_t n) {
+            for (std::size_t i = 0; i < n; ++i) {
+                p[i].x += v[i].vx;
+                p[i].y += v[i].vy;
+            }
+        },
+        64);
+
+    // Verify against a serial scalar pass over an identically-built world.
+    ekit::World ref;
+    ref.RegisterComponents<Position, Velocity>();
+    for (int i = 0; i < 1000; ++i) {
+        ekit::Entity e = ref.Create();
+        ref.Add<Position>(e, static_cast<float>(i % 31), static_cast<float>(i % 17));
+        ref.Add<Velocity>(e, 0.25f, 0.75f);
+    }
+    ref.Query<Position, Velocity>().ForEach(
+        [](Position& p, Velocity& v) { p.x += v.vx; p.y += v.vy; });
+
+    bool same = true;
+    for (std::size_t i = 0; i < 1000; ++i) {
+        const ekit::Entity e = world.GetEntity(static_cast<ekit::EntityId>(i + 1));
+        const ekit::Entity re = ref.GetEntity(static_cast<ekit::EntityId>(i + 1));
+        const Position& a = world.Get<Position>(e);
+        const Position& b = ref.Get<Position>(re);
+        same = same && (a.x == b.x) && (a.y == b.y);
+    }
+    CHECK(same);
+}
+
+
+TEST(world_shortcut_for_each_and_count) {
+    ekit::World world;
+    world.RegisterComponents<Position, Velocity, Health, Tag>();
+    for (int i = 0; i < 100; ++i) {
+        ekit::Entity e = world.Create();
+        world.Add<Position>(e, static_cast<float>(i), 0.f);
+        world.Add<Velocity>(e, 1.f, 2.f);
+        if (i % 2 == 0) {
+            world.Add<Tag>(e);
+        }
+    }
+
+    const std::size_t all_movers = world.Count<Position, Velocity>();
+    const std::size_t tagged_movers = world.Count<Position, Velocity, Tag>();
+    const std::size_t healthy_movers = world.Count<Position, Health>();
+    CHECK_EQ(all_movers, 100u);
+    CHECK_EQ(tagged_movers, 50u);
+    CHECK_EQ(healthy_movers, 0u);
+
+    world.ForEach<Position, Velocity>([](Position& p, Velocity& v) {
+        p.x += v.vx;
+        p.y += v.vy;
+    });
+
+    float sum = 0.f;
+    world.ForEach<Position>([&](const Position& p) { sum += p.x; });
+    // initial x sum = 0 + ... + 99 = 4950; each += 1 -> 5050
+    CHECK_EQ(sum, 5050.f);
+
+    std::size_t seen = 0;
+    world.ForEach<Position>([&](ekit::Entity e, const Position& p) {
+        (void)p;
+        if (e.IsValid()) {
+            ++seen;
+        }
+    });
+    CHECK_EQ(seen, 100u);
+}
+
+TEST(world_shortcut_foreach_batch) {
+    ekit::World world;
+    world.RegisterComponents<Position, Velocity>();
+    for (int i = 0; i < 100; ++i) {
+        ekit::Entity e = world.Create();
+        world.Add<Position>(e, static_cast<float>(i), 0.f);
+        world.Add<Velocity>(e, 1.f, 1.f);
+    }
+
+    world.ForEachBatch<Position, Velocity>([](Position* p, Velocity* v, std::size_t n) {
+        for (std::size_t i = 0; i < n; ++i) {
+            p[i].x += v[i].vx * 2.f;
+            p[i].y += v[i].vy * 2.f;
+        }
+    });
+
+    float sum = 0.f;
+    world.ForEach<Position>([&](const Position& p) { sum += p.x; });
+    // initial x sum = 0 + ... + 99 = 4950; each += 2 -> 5150
+    CHECK_EQ(sum, 5150.f);
+}
+
+TEST(world_shortcut_foreach_parallel) {
+    auto build = [](ekit::World& w) {
+        w.RegisterComponents<Position, Velocity>();
+        for (int i = 0; i < 1000; ++i) {
+            ekit::Entity e = w.Create();
+            w.Add<Position>(e, static_cast<float>(i % 31), static_cast<float>(i % 17));
+            w.Add<Velocity>(e, 0.25f, 0.75f);
+        }
+    };
+
+    ekit::World serial_world;
+    ekit::World parallel_world;
+    build(serial_world);
+    build(parallel_world);
+
+    serial_world.ForEach<Position, Velocity>([](Position& p, Velocity& v) {
+        p.x += v.vx;
+        p.y += v.vy;
+    });
+
+    ekit::ThreadPool pool(4);
+    parallel_world.ForEachParallel<Position, Velocity>(pool, [](Position& p, Velocity& v) {
+        p.x += v.vx;
+        p.y += v.vy;
+    });
+
+    bool same = true;
+    for (std::size_t i = 0; i < 1000; ++i) {
+        const ekit::Entity e = serial_world.GetEntity(static_cast<ekit::EntityId>(i + 1));
+        const ekit::Entity pe = parallel_world.GetEntity(static_cast<ekit::EntityId>(i + 1));
+        const Position& a = serial_world.Get<Position>(e);
+        const Position& b = parallel_world.Get<Position>(pe);
+        same = same && (a.x == b.x) && (a.y == b.y);
+    }
+    CHECK(same);
+
+    ekit::World batch_world;
+    build(batch_world);
+    batch_world.ForEachBatchParallel<Position, Velocity>(
+        pool, [](Position* p, Velocity* v, std::size_t n) {
+            for (std::size_t i = 0; i < n; ++i) {
+                p[i].x += v[i].vx;
+                p[i].y += v[i].vy;
+            }
+        },
+        64);
+
+    bool same_batch = true;
+    for (std::size_t i = 0; i < 1000; ++i) {
+        const ekit::Entity e = serial_world.GetEntity(static_cast<ekit::EntityId>(i + 1));
+        const ekit::Entity be = batch_world.GetEntity(static_cast<ekit::EntityId>(i + 1));
+        const Position& a = serial_world.Get<Position>(e);
+        const Position& b = batch_world.Get<Position>(be);
+        same_batch = same_batch && (a.x == b.x) && (a.y == b.y);
+    }
+    CHECK(same_batch);
+}
+
 
 // ---------------------------------------------------------------------------
 // main

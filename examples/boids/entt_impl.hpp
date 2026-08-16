@@ -11,6 +11,7 @@
 #include "boids.hpp" // same components: Position / Velocity / BoidTag / ...
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <deque>
 #include <functional>
@@ -120,28 +121,39 @@ public:
     EnTTParallel(const EnTTParallel&) = delete;
     EnTTParallel& operator=(const EnTTParallel&) = delete;
 
-    // Runs f over the given entities using `threads_` workers.
-    void Run(const std::vector<entt::entity>& entities,
-             const std::function<void(entt::entity)>& f) {
-        const std::size_t n = entities.size();
+    // Runs fn(begin, end) over non-overlapping index ranges covering [0, n).
+    //
+    // Work is grabbed dynamically through a single atomic cursor (one task per
+    // worker), mirroring ekit's Query::ForEachParallel chunking so that the
+    // comparison isolates the ECS layer rather than the parallelization scheme.
+    void RunIndices(std::size_t n, const std::function<void(std::size_t, std::size_t)>& fn) {
         if (threads_ <= 1 || n <= 1) {
-            for (entt::entity e : entities) {
-                f(e);
-            }
+            fn(0, n);
             return;
         }
-        const std::size_t chunk = (n + threads_ - 1) / threads_;
-        for (unsigned t = 0; t < threads_; ++t) {
-            const std::size_t begin = t * chunk;
-            const std::size_t end = std::min(n, begin + chunk);
-            if (begin >= end) {
-                break;
-            }
-            Submit([&, begin, end] {
-                for (std::size_t i = begin; i < end; ++i) {
-                    f(entities[i]);
+
+        constexpr std::size_t kMinChunk = 64;
+        if (n < threads_ * kMinChunk) {
+            fn(0, n);
+            return;
+        }
+
+        const std::size_t chunk = std::max<std::size_t>(kMinChunk, n / (threads_ * 4));
+        std::atomic<std::size_t> next{0};
+
+        auto loop = [&next, &fn, n, chunk] {
+            for (;;) {
+                const std::size_t i = next.fetch_add(chunk, std::memory_order_relaxed);
+                if (i >= n) {
+                    break;
                 }
-            });
+                const std::size_t end = std::min<std::size_t>(n, i + chunk);
+                fn(i, end);
+            }
+        };
+
+        for (unsigned t = 0; t < threads_; ++t) {
+            Submit(loop);
         }
         WaitAll();
     }
@@ -194,6 +206,31 @@ private:
     unsigned threads_;
 };
 
+// Dynamic chunked iteration over an EnTT storage's packed array, matching
+// ekit's ParallelFor: it drives the dense array and hands each entity to f,
+// which then resolves components through storage->get(entity) exactly like
+// ekit's Query resolves them through a sparse lookup.
+template<typename Storage, typename F>
+void RunStorage(EnTTParallel& pool, Storage& storage, F&& f) {
+    const std::size_t n = storage.size();
+    if (n == 0) {
+        return;
+    }
+    pool.RunIndices(n, [&](std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i) {
+            f(storage[i]);
+        }
+    });
+}
+
+template<typename Storage, typename F>
+void ForEachStorage(Storage& storage, F&& f) {
+    const std::size_t n = storage.size();
+    for (std::size_t i = 0; i < n; ++i) {
+        f(storage[i]);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Spawn + one simulation step (identical math to the ekit systems)
 // ---------------------------------------------------------------------------
@@ -220,160 +257,166 @@ inline void SpawnEnTTBoids(entt::registry& reg, std::vector<entt::entity>& out,
 }
 
 inline void StepEnTT(entt::registry& reg, EnTTGrid& grid, const Config& cfg,
-                     EnTTParallel& pool, const std::vector<entt::entity>& boids) {
+                     EnTTParallel& pool) {
     grid.Build(reg);
 
+    auto& pos = reg.storage<Position>();
+
     // --- Rule 1: separation (parallel) ----------------------------------
-    pool.Run(boids, [&](entt::entity e) {
-        const Position* p = reg.try_get<const Position>(e);
-        Separation* s = reg.try_get<Separation>(e);
-        if (p == nullptr || s == nullptr) {
-            return;
-        }
-        float sx = 0.f;
-        float sy = 0.f;
-        grid.ForEachNeighbor(reg, *p, cfg.separation_radius, [&](entt::entity n) {
-            if (n == e) {
-                return;
-            }
-            const Position* np = reg.try_get<const Position>(n);
-            if (np == nullptr) {
-                return;
-            }
-            const float dx = p->x - np->x;
-            const float dy = p->y - np->y;
-            const float d2 = dx * dx + dy * dy;
-            if (d2 < cfg.separation_radius * cfg.separation_radius && d2 > 1e-4f) {
-                const float d = std::sqrt(d2);
-                const float strength = 1.f - d / cfg.separation_radius;
-                sx += (dx / d) * strength;
-                sy += (dy / d) * strength;
-            }
+    {
+        auto& sep = reg.storage<Separation>();
+        RunStorage(pool, pos, [&](entt::entity e) {
+            const Position& p = pos.get(e);
+            Separation& s = sep.get(e);
+            float sx = 0.f;
+            float sy = 0.f;
+            grid.ForEachNeighbor(reg, p, cfg.separation_radius, [&](entt::entity n) {
+                if (n == e) {
+                    return;
+                }
+                const Position* np = reg.try_get<const Position>(n);
+                if (np == nullptr) {
+                    return;
+                }
+                const float dx = p.x - np->x;
+                const float dy = p.y - np->y;
+                const float d2 = dx * dx + dy * dy;
+                if (d2 < cfg.separation_radius * cfg.separation_radius && d2 > 1e-4f) {
+                    const float d = std::sqrt(d2);
+                    const float strength = 1.f - d / cfg.separation_radius;
+                    sx += (dx / d) * strength;
+                    sy += (dy / d) * strength;
+                }
+            });
+            s.x = sx;
+            s.y = sy;
         });
-        s->x = sx;
-        s->y = sy;
-    });
-
-    // --- Rule 2: alignment (parallel) -----------------------------------
-    pool.Run(boids, [&](entt::entity e) {
-        const Position* p = reg.try_get<const Position>(e);
-        Alignment* a = reg.try_get<Alignment>(e);
-        if (p == nullptr || a == nullptr) {
-            return;
-        }
-        float ax = 0.f;
-        float ay = 0.f;
-        int count = 0;
-        grid.ForEachNeighbor(reg, *p, cfg.neighbor_radius, [&](entt::entity n) {
-            if (n == e) {
-                return;
-            }
-            const Velocity* nv = reg.try_get<const Velocity>(n);
-            if (nv == nullptr) {
-                return;
-            }
-            ax += nv->x;
-            ay += nv->y;
-            ++count;
-        });
-        if (count > 0) {
-            a->x = ax / static_cast<float>(count);
-            a->y = ay / static_cast<float>(count);
-        } else {
-            a->x = 0.f;
-            a->y = 0.f;
-        }
-    });
-
-    // --- Rule 3: cohesion (parallel) ------------------------------------
-    pool.Run(boids, [&](entt::entity e) {
-        const Position* p = reg.try_get<const Position>(e);
-        Cohesion* c = reg.try_get<Cohesion>(e);
-        if (p == nullptr || c == nullptr) {
-            return;
-        }
-        float cx = 0.f;
-        float cy = 0.f;
-        int count = 0;
-        grid.ForEachNeighbor(reg, *p, cfg.neighbor_radius, [&](entt::entity n) {
-            if (n == e) {
-                return;
-            }
-            const Position* np = reg.try_get<const Position>(n);
-            if (np == nullptr) {
-                return;
-            }
-            cx += np->x;
-            cy += np->y;
-            ++count;
-        });
-        if (count > 0) {
-            c->x = (cx / static_cast<float>(count)) - p->x;
-            c->y = (cy / static_cast<float>(count)) - p->y;
-        } else {
-            c->x = 0.f;
-            c->y = 0.f;
-        }
-    });
-
-    // --- Rule 4: soft bounds (parallel) ---------------------------------
-    pool.Run(boids, [&](entt::entity e) {
-        const Position* p = reg.try_get<const Position>(e);
-        BoundsSteer* b = reg.try_get<BoundsSteer>(e);
-        if (p == nullptr || b == nullptr) {
-            return;
-        }
-        const float world_w = static_cast<float>(cfg.width);
-        const float world_h = static_cast<float>(cfg.height);
-        float sx = 0.f;
-        float sy = 0.f;
-        if (p->x < cfg.edge_margin) {
-            sx = (cfg.edge_margin - p->x) / cfg.edge_margin;
-        } else if (p->x > world_w - cfg.edge_margin) {
-            sx = (world_w - cfg.edge_margin - p->x) / cfg.edge_margin;
-        }
-        if (p->y < cfg.edge_margin) {
-            sy = (cfg.edge_margin - p->y) / cfg.edge_margin;
-        } else if (p->y > world_h - cfg.edge_margin) {
-            sy = (world_h - cfg.edge_margin - p->y) / cfg.edge_margin;
-        }
-        b->x = sx;
-        b->y = sy;
-    });
-
-    // --- Combine rules into velocity (serial, single system) ------------
-    for (entt::entity e : boids) {
-        Velocity* v = reg.try_get<Velocity>(e);
-        const Separation* s = reg.try_get<const Separation>(e);
-        const Alignment* a = reg.try_get<const Alignment>(e);
-        const Cohesion* c = reg.try_get<const Cohesion>(e);
-        const BoundsSteer* b = reg.try_get<const BoundsSteer>(e);
-        if (v == nullptr || s == nullptr || a == nullptr || c == nullptr || b == nullptr) {
-            continue;
-        }
-        v->x += s->x * cfg.separation_weight + a->x * cfg.alignment_weight +
-                c->x * cfg.cohesion_weight + b->x * cfg.edge_steer;
-        v->y += s->y * cfg.separation_weight + a->y * cfg.alignment_weight +
-                c->y * cfg.cohesion_weight + b->y * cfg.edge_steer;
-        const float speed = std::sqrt(v->x * v->x + v->y * v->y);
-        if (speed > cfg.max_speed) {
-            v->x *= cfg.max_speed / speed;
-            v->y *= cfg.max_speed / speed;
-        } else if (speed < cfg.min_speed && speed > 1e-4f) {
-            v->x *= cfg.min_speed / speed;
-            v->y *= cfg.min_speed / speed;
-        }
     }
 
-    // --- Integrate position (serial, single system) ---------------------
-    for (entt::entity e : boids) {
-        Position* p = reg.try_get<Position>(e);
-        const Velocity* v = reg.try_get<const Velocity>(e);
-        if (p == nullptr || v == nullptr) {
-            continue;
-        }
-        p->x += v->x * cfg.dt;
-        p->y += v->y * cfg.dt;
+    // --- Rule 2: alignment (parallel) -----------------------------------
+    {
+        auto& align = reg.storage<Alignment>();
+        RunStorage(pool, pos, [&](entt::entity e) {
+            const Position& p = pos.get(e);
+            Alignment& a = align.get(e);
+            float ax = 0.f;
+            float ay = 0.f;
+            int count = 0;
+            grid.ForEachNeighbor(reg, p, cfg.neighbor_radius, [&](entt::entity n) {
+                if (n == e) {
+                    return;
+                }
+                const Velocity* nv = reg.try_get<const Velocity>(n);
+                if (nv == nullptr) {
+                    return;
+                }
+                ax += nv->x;
+                ay += nv->y;
+                ++count;
+            });
+            if (count > 0) {
+                a.x = ax / static_cast<float>(count);
+                a.y = ay / static_cast<float>(count);
+            } else {
+                a.x = 0.f;
+                a.y = 0.f;
+            }
+        });
+    }
+
+    // --- Rule 3: cohesion (parallel) ------------------------------------
+    {
+        auto& coh = reg.storage<Cohesion>();
+        RunStorage(pool, pos, [&](entt::entity e) {
+            const Position& p = pos.get(e);
+            Cohesion& c = coh.get(e);
+            float cx = 0.f;
+            float cy = 0.f;
+            int count = 0;
+            grid.ForEachNeighbor(reg, p, cfg.neighbor_radius, [&](entt::entity n) {
+                if (n == e) {
+                    return;
+                }
+                const Position* np = reg.try_get<const Position>(n);
+                if (np == nullptr) {
+                    return;
+                }
+                cx += np->x;
+                cy += np->y;
+                ++count;
+            });
+            if (count > 0) {
+                c.x = (cx / static_cast<float>(count)) - p.x;
+                c.y = (cy / static_cast<float>(count)) - p.y;
+            } else {
+                c.x = 0.f;
+                c.y = 0.f;
+            }
+        });
+    }
+
+    // --- Rule 4: soft bounds (parallel) ---------------------------------
+    {
+        auto& bounds = reg.storage<BoundsSteer>();
+        RunStorage(pool, pos, [&](entt::entity e) {
+            const Position& p = pos.get(e);
+            BoundsSteer& b = bounds.get(e);
+            const float world_w = static_cast<float>(cfg.width);
+            const float world_h = static_cast<float>(cfg.height);
+            float sx = 0.f;
+            float sy = 0.f;
+            if (p.x < cfg.edge_margin) {
+                sx = (cfg.edge_margin - p.x) / cfg.edge_margin;
+            } else if (p.x > world_w - cfg.edge_margin) {
+                sx = (world_w - cfg.edge_margin - p.x) / cfg.edge_margin;
+            }
+            if (p.y < cfg.edge_margin) {
+                sy = (cfg.edge_margin - p.y) / cfg.edge_margin;
+            } else if (p.y > world_h - cfg.edge_margin) {
+                sy = (world_h - cfg.edge_margin - p.y) / cfg.edge_margin;
+            }
+            b.x = sx;
+            b.y = sy;
+        });
+    }
+
+    // --- Combine rules into velocity (serial, drive Velocity) -----------
+    {
+        auto& vel = reg.storage<Velocity>();
+        auto& sep = reg.storage<Separation>();
+        auto& align = reg.storage<Alignment>();
+        auto& coh = reg.storage<Cohesion>();
+        auto& bounds = reg.storage<BoundsSteer>();
+        ForEachStorage(vel, [&](entt::entity e) {
+            Velocity& v = vel.get(e);
+            const Separation& s = sep.get(e);
+            const Alignment& a = align.get(e);
+            const Cohesion& c = coh.get(e);
+            const BoundsSteer& b = bounds.get(e);
+            v.x += s.x * cfg.separation_weight + a.x * cfg.alignment_weight +
+                   c.x * cfg.cohesion_weight + b.x * cfg.edge_steer;
+            v.y += s.y * cfg.separation_weight + a.y * cfg.alignment_weight +
+                   c.y * cfg.cohesion_weight + b.y * cfg.edge_steer;
+            const float speed = std::sqrt(v.x * v.x + v.y * v.y);
+            if (speed > cfg.max_speed) {
+                v.x *= cfg.max_speed / speed;
+                v.y *= cfg.max_speed / speed;
+            } else if (speed < cfg.min_speed && speed > 1e-4f) {
+                v.x *= cfg.min_speed / speed;
+                v.y *= cfg.min_speed / speed;
+            }
+        });
+    }
+
+    // --- Integrate position (serial, drive Position) --------------------
+    {
+        auto& vel = reg.storage<Velocity>();
+        ForEachStorage(pos, [&](entt::entity e) {
+            Position& p = pos.get(e);
+            const Velocity& v = vel.get(e);
+            p.x += v.x * cfg.dt;
+            p.y += v.y * cfg.dt;
+        });
     }
 }
 
