@@ -49,7 +49,11 @@ public:
     }
 
     Scheduler& SetThreadCount(std::size_t count) {
-        thread_count_ = std::max<std::size_t>(1, count);
+        thread_count_ = count == 0 ? std::max<std::size_t>(1, std::thread::hardware_concurrency())
+                                   : count;
+        // Rebuild the pool lazily on the next parallel Run; an existing pool
+        // cannot change its worker count in place.
+        pool_.reset();
         return *this;
     }
 

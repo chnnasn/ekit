@@ -296,6 +296,29 @@ TEST(query_where_filter) {
              2u);
 }
 
+TEST(query_where_chaining_and_capture) {
+    ekit::World world;
+    world.RegisterComponents<Position, Velocity>();
+
+    for (int i = 1; i <= 5; ++i) {
+        ekit::Entity e = world.Create();
+        world.Add<Position>(e, float(i), 0.f);
+        world.Add<Velocity>(e, float(i), 0.f);
+    }
+
+    // Capturing predicates must not require default-construction, and chained
+    // Where filters must combine with logical AND.
+    float threshold = 3.f;
+    int count = 0;
+    float sum = 0.f;
+    world.Query<Position, Velocity>()
+        .Where([&](Position&, Velocity& v) { return v.vx > threshold; })
+        .Where([](Position& p, Velocity&) { return p.x < 5.f; })
+        .ForEach([&](Position& p, Velocity&) { ++count; sum += p.x; });
+    CHECK_EQ(count, 1);
+    CHECK_EQ(sum, 4.f);
+}
+
 TEST(query_with_without_optional) {
     ekit::World world;
     world.RegisterComponents<Position, Velocity, Health, Tag, ManualComponent>();
@@ -1137,6 +1160,23 @@ TEST(query_foreach_batch) {
         },
         32);
     CHECK_EQ(seen, 100u);
+}
+
+TEST(query_foreach_batch_rejects_sparse_excluded) {
+    ekit::World world;
+    world.RegisterComponent<Position>();
+    world.RegisterSparseComponent<Tag>();
+
+    ekit::Entity e = world.Create();
+    world.Add<Position>(e, 0.f, 0.f);
+    world.Add<Tag>(e);
+
+    // Batch iteration hands out contiguous dense SoA pointers and cannot apply
+    // a per-entity sparse exclusion, so this must fail loudly instead of
+    // silently returning the excluded entity.
+    auto batch = [](Position*, std::size_t) {};
+    CHECK_THROWS_AS(world.Query<Position>().Without<Tag>().ForEachBatch(batch),
+                    ekit::EkitException);
 }
 
 TEST(query_foreach_batch_parallel) {

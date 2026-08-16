@@ -16,9 +16,7 @@
 #include "parallel.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cstddef>
-#include <cstring>
 #include <tuple>
 #include <type_traits>
 #include <vector>
@@ -42,6 +40,7 @@ public:
     // Drops all records but keeps the allocated capacity.
     void Clear() {
         size_ = 0;
+        ClearImpl(std::index_sequence_for<Ts...>{});
     }
 
     // Reserves storage for at least `rows` records.
@@ -87,38 +86,41 @@ public:
 
 private:
     template<std::size_t... I>
+    void ClearImpl(std::index_sequence<I...>) {
+        (std::get<I>(columns_).clear(), ...);
+    }
+
+    template<std::size_t... I>
     void ReserveImpl(std::size_t rows, std::index_sequence<I...>) {
-        ((columns_[I].reserve(rows * sizeof(Ts))), ...);
+        ((void)std::get<I>(columns_).reserve(rows), ...);
     }
 
     template<std::size_t... I, typename Tuple>
     void AppendImpl(std::index_sequence<I...>, Tuple tup) {
-        ((Write<I>(size_, std::get<I>(tup))), ...);
+        ((Write<I>(std::get<I>(tup))), ...);
     }
 
     template<std::size_t I, typename A>
-    void Write(std::size_t row, const A& value) {
+    void Write(const A& value) {
         using T = std::tuple_element_t<I, std::tuple<Ts...>>;
-        auto& col = columns_[I];
-        const std::size_t offset = row * sizeof(T);
-        if (offset + sizeof(T) > col.size()) {
-            col.resize(offset + sizeof(T));
+        auto& col = std::get<I>(columns_);
+        if (size_ >= col.size()) {
+            col.resize(size_ + 1);
         }
-        const T tmp = static_cast<T>(value);
-        std::memcpy(col.data() + offset, &tmp, sizeof(T));
+        col[size_] = static_cast<T>(value);
     }
 
     template<typename F, std::size_t... I>
     void BatchImpl(F& fn, std::index_sequence<I...>) {
-        fn(reinterpret_cast<Ts*>(columns_[I].data())..., size_);
+        fn(std::get<I>(columns_).data()..., size_);
     }
 
     template<typename F, std::size_t... I>
     void BatchRangeImpl(F& fn, std::size_t base, std::size_t count, std::index_sequence<I...>) {
-        fn((reinterpret_cast<Ts*>(columns_[I].data()) + base)..., count);
+        fn((std::get<I>(columns_).data() + base)..., count);
     }
 
-    std::array<std::vector<std::byte>, sizeof...(Ts)> columns_;
+    std::tuple<std::vector<Ts>...> columns_;
     std::size_t size_ = 0;
 };
 

@@ -107,7 +107,7 @@ world.Query<Position, Velocity>()
 ## 功能
 
 - **实体（Entity）**：强类型、带世代编号的句柄，可安全处理失效句柄（`Entity::Null`、`IsAlive`，槽位回收时自动递增世代编号）。
-- **组件（Component）**：在类体内通过 `EKIT_COMPONENT(T)` 声明的 POD 结构体；使用 `world.RegisterComponent<T>()` 显式注册；采用稀疏集存储（缓存友好的密集数组与交换删除）。
+- **组件（Component）**：在类体内通过 `EKIT_COMPONENT(T)` 声明的 POD 结构体；使用 `world.RegisterComponent<T>()` 显式注册为 dense archetype SoA 存储，或使用 `world.RegisterSparseComponent<T>()` 注册为按类型的稀疏集（缓存友好的密集数组与交换删除）。
 - **世界（World）**：实体创建与销毁、组件 `Add / Emplace / Set / Get / TryGet / Has / Remove / Patch / Clear`、命名实体、批量注册和 `ClearAll`。
 - **查询（Query）**：支持 `Where / With / Without / Optional / ForEach / Count` 的流畅查询，并从符合条件的存储中最小的那个开始迭代：
   ```cpp
@@ -227,15 +227,15 @@ ctest --test-dir build -C Release
 
 ## 单元测试
 
-`tests/tests.cpp` 随库一起发布，通过 `ctest` 运行：**47 个测试用例 / 304 项断言，全部通过**。覆盖范围：
+`tests/tests.cpp` 随库一起发布，通过 `ctest` 运行：**49 个测试用例 / 307 项断言，全部通过**。覆盖范围：
 
 | 领域 | 用例数 |
 | --- | --- |
 | 实体 - 世代编号、失效句柄安全、槽位回收 | 5 |
 | 组件 - 注册、增删改查、错误路径、清除 | 6 |
-| 查询 - ForEach、Where、With/Without/Optional、const 引用 | 5 |
+| 查询 - ForEach、Where、With/Without/Optional、const 引用 | 6 |
 | 并行查询 - ForEachParallel 正确性、过滤、确定性写入 | 3 |
-| SoA 批查询 - ForEachBatch / ForEachBatchParallel | 2 |
+| SoA 批查询 - ForEachBatch / ForEachBatchParallel | 3 |
 | World 快捷方法 - ForEach / ForEachParallel / ForEachBatch(Parallel) / Count | 3 |
 | 命名实体 | 1 |
 | 事件 - 订阅/派发、多个处理器 | 3 |
@@ -244,7 +244,7 @@ ctest --test-dir build -C Release
 | 稀疏组件 - 基础 CRUD、并行查询 | 2 |
 | 流处理 - ScratchSoa 收集后批处理 | 3 |
 | 回归 - 销毁后遍历、空闲槽访问、遍历中改组件、世代溢出、自退订、任务异常后调度器恢复 | 6 |
-| **合计** | **47 / 304** |
+| **合计** | **49 / 307** |
 
 运行方式：
 
@@ -276,7 +276,7 @@ examples/
 ```
 ## 路线图
 
-- [x] Entity / Component / World 核心（稀疏集存储）
+- [x] Entity / Component / World 核心（dense archetype SoA + 稀疏集存储）
 - [x] 流畅 Query（`Where / With / Without / Optional`）
 - [x] 系统 `Reads/Writes` + 并行 Scheduler
 - [x] 事件系统（`Subscribe` / `Emit`）

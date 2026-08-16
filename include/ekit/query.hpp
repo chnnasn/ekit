@@ -45,6 +45,24 @@ struct EmptyPredicate {
     }
 };
 
+// Combines two predicates with logical AND. This lets `Where` chains compose
+// instead of silently keeping only the last filter, and it stores lambdas by
+// value so capturing lambdas do not need to be default-constructible.
+template<typename A, typename B>
+struct AndPredicate {
+    A first;
+    B second;
+
+    AndPredicate(A a, B b)
+        : first(std::move(a)), second(std::move(b)) {}
+
+    template<typename... Args>
+        requires (std::is_invocable_v<A&, Args...> && std::is_invocable_v<B&, Args...>)
+    bool operator()(Args&&... args) {
+        return first(std::forward<Args>(args)...) && second(std::forward<Args>(args)...);
+    }
+};
+
 template<typename List>
 struct AllComponents;
 template<typename... Ts>
@@ -209,10 +227,18 @@ public:
 
     template<typename F>
     auto Where(F&& pred) const
-        -> Query<WorldT, std::decay_t<F>, RequiredList, OptionalList, ExcludedList> {
-        Query<WorldT, std::decay_t<F>, RequiredList, OptionalList, ExcludedList> q(*world_);
-        q.predicate_ = std::forward<F>(pred);
-        return q;
+        -> Query<WorldT, detail::AndPredicate<PredicateT, std::decay_t<F>>,
+                 RequiredList, OptionalList, ExcludedList> {
+        using NewPredicate = detail::AndPredicate<PredicateT, std::decay_t<F>>;
+        PredicateT previous = [&] {
+            if constexpr (std::is_copy_constructible_v<PredicateT>) {
+                return predicate_;
+            } else {
+                return std::move(predicate_);
+            }
+        }();
+        return Query<WorldT, NewPredicate, RequiredList, OptionalList, ExcludedList>(
+            *world_, NewPredicate{std::move(previous), std::forward<F>(pred)});
     }
 
     template<typename... Ts>
@@ -442,11 +468,16 @@ private:
             detail::ResolveIds<WorldT, OptionalList>::Into(world_, ids);
             for (auto id : ids) check(id);
         }
+        {
+            std::vector<ComponentTypeId> ids;
+            detail::ResolveIds<WorldT, ExcludedList>::Into(world_, ids);
+            for (auto id : ids) check(id);
+        }
         if (!ok) {
             throw EkitException(
-                "ekit: ForEachBatch requires every queried component to be dense "
-                "(archetype SoA). Access sparse components inside the callback via "
-                "world.TryGet/Get instead.");
+                "ekit: ForEachBatch requires every queried component (required, optional "
+                "and excluded) to be dense (archetype SoA). Access sparse components inside "
+                "the callback via world.TryGet/Get instead, or use ForEach for sparse filters.");
         }
     }
 

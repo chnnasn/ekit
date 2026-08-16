@@ -122,8 +122,9 @@ A runnable tour of the ergonomic surface lives in
 - **Entity** — strong-typed, generation-based handle with dangling-handle safety
   (`Entity::Null`, `IsAlive`, automatic slot recycling with generation bumps).
 - **Component** — POD structs declaring `EKIT_COMPONENT(T)` inside the class body; explicit
-  `world.RegisterComponent<T>()`; sparse-set storage (cache-friendly dense arrays,
-  swap-and-pop removal).
+  `world.RegisterComponent<T>()` for dense archetype SoA storage, or
+  `world.RegisterSparseComponent<T>()` for per-type sparse sets (cache-friendly
+  dense arrays, swap-and-pop removal).
 - **World** — entity create/destroy, component `Add / Emplace / Set / Get / TryGet /
   Has / Remove / Patch / Clear`, named entities, batch registration, `ClearAll`.
 - **Query** — fluent queries with `Where / With / Without / Optional / ForEach / Count`,
@@ -268,15 +269,15 @@ ctest --test-dir build -C Release
 ## Unit tests
 
 `tests/tests.cpp` ships with the library and is run via `ctest`:
-**47 test cases / 304 assertions, all passing.** Coverage:
+**49 test cases / 307 assertions, all passing.** Coverage:
 
 | area | tests |
 | --- | --- |
 | Entity - generation, stale-handle safety, slot recycling | 5 |
 | Components - registration, CRUD, error paths, clear | 6 |
-| Queries - ForEach, Where, With/Without/Optional, const refs | 5 |
+| Queries - ForEach, Where, With/Without/Optional, const refs | 6 |
 | Parallel queries - ForEachParallel correctness, filters, deterministic writes | 3 |
-| SoA batch queries - ForEachBatch / ForEachBatchParallel | 2 |
+| SoA batch queries - ForEachBatch / ForEachBatchParallel | 3 |
 | World shortcuts - ForEach / ForEachParallel / ForEachBatch(Parallel) / Count | 3 |
 | Named entities | 1 |
 | Events - subscribe/emit, multiple handlers | 3 |
@@ -285,7 +286,7 @@ ctest --test-dir build -C Release
 | Sparse components - basic CRUD, parallel queries | 2 |
 | Stream processing - ScratchSoa collect-then-batch | 3 |
 | Regression - destroy-then-iterate, free-slot access, mutation during iteration, generation overflow, self-unsubscribe, scheduler recovery after a task exception | 6 |
-| **Total** | **47 / 304** |
+| **Total** | **49 / 307** |
 
 Run them with:
 
@@ -317,7 +318,7 @@ examples/
 ```
 ## Roadmap
 
-- [x] Entity / Component / World core (sparse-set storage)
+- [x] Entity / Component / World core (dense archetype SoA + sparse-set storage)
 - [x] Fluent Query with `Where / With / Without / Optional`
 - [x] System `Reads/Writes` + parallel Scheduler
 - [x] Event system (`Subscribe` / `Emit`)

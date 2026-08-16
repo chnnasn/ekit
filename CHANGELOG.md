@@ -22,6 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ekit's dense-array drive + per-component lookup and identical component set; `ekit-dp` measures
   ~22-31% faster than EnTT v4 at 5000-10000 boids.
 
+### Fixed
+
+- `Query::Where` now supports capturing lambdas and composes chained predicates with
+  logical AND (previously only the last filter was kept and capturing predicates did not compile).
+- `ForEachBatch` / `ForEachBatchParallel` now throw when an excluded component is sparse,
+  instead of silently ignoring the exclusion.
+- `ScratchSoa` columns now use `std::vector<T>` storage, guaranteeing correct alignment for
+  every column type.
+- `Scheduler::SetThreadCount` now recreates the worker pool so the new thread count takes
+  effect on the next run.
+- Documentation updated to match the dense-archetype + sparse-set dual storage backend.
+
 ## [0.1.0] - 2026-08-12
 
 First public release.
@@ -31,7 +43,7 @@ First public release.
 - **Core ECS**
   - Strong-typed, generation-based `Entity` handle (`Entity::Null`, `IsAlive`, automatic slot recycling with generation bumps).
   - Explicit component declaration via `EKIT_COMPONENT(T)` and registration via `world.RegisterComponent<T>()`; undeclared/unregistered usage produces readable compile-time or runtime errors.
-  - Sparse-set `ComponentStorage<T>` (cache-friendly dense arrays, swap-and-pop removal).
+  - Dense archetype storage (SoA columns) plus a `ComponentStorage<T>` sparse-set backend (cache-friendly dense arrays, swap-and-pop removal).
 - **World** - entity create/destroy, component `Add / Emplace / Set / Get / TryGet / Has / Remove / Patch / Clear`, named entities, batch registration, `ClearAll`.
 - **Query** - fluent `Query<Ts...>()` with `Where / With / Without / Optional / ForEach / Each / Count`, composed entirely at compile time (no type erasure, no per-entity virtual calls); iterates the smallest matching storage.
 - **System & Scheduler** - systems declare `Reads / Writes` in-class; the scheduler builds a dependency DAG and runs independent systems in parallel on an internal thread pool. Two writers of the same component are serialized in registration order; a cycle is reported only for genuine dependency contradictions.
