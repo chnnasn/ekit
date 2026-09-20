@@ -283,7 +283,7 @@ public:
         RequireAlive(e);
         const ComponentTypeId id = GetComponentTypeId<T>();
         if (component_kinds_[id] == StorageKind::Sparse) {
-            return GetSparseStorage<T>().Emplace(e.GetIndex(), std::forward<Args>(args)...);
+            return SparseStorageAt<T>(id).Emplace(e.GetIndex(), std::forward<Args>(args)...);
         }
         return AddDense<T>(e, id, std::forward<Args>(args)...);
     }
@@ -298,7 +298,7 @@ public:
         RequireAlive(e);
         const ComponentTypeId id = GetComponentTypeId<T>();
         if (component_kinds_[id] == StorageKind::Sparse) {
-            auto& storage = GetSparseStorage<T>();
+            auto& storage = SparseStorageAt<T>(id);
             if (T* existing = storage.TryGet(e.GetIndex())) {
                 *existing = T{std::forward<Args>(args)...};
                 return *existing;
@@ -323,7 +323,7 @@ public:
         }
         const ComponentTypeId id = GetComponentTypeId<T>();
         if (component_kinds_[id] == StorageKind::Sparse) {
-            return GetSparseStorage<T>().Contains(e.GetIndex());
+            return SparseStorageAt<T>(id).Contains(e.GetIndex());
         }
         return archetypes_[entity_archetype_[e.GetIndex()]]->ColumnIndex(id) >= 0;
     }
@@ -333,7 +333,7 @@ public:
         RequireAlive(e);
         const ComponentTypeId id = GetComponentTypeId<T>();
         if (component_kinds_[id] == StorageKind::Sparse) {
-            return GetSparseStorage<T>().Get(e.GetIndex());
+            return SparseStorageAt<T>(id).Get(e.GetIndex());
         }
         Archetype& a = *archetypes_[entity_archetype_[e.GetIndex()]];
         const std::ptrdiff_t col = a.ColumnIndex(id);
@@ -348,7 +348,7 @@ public:
         RequireAlive(e);
         const ComponentTypeId id = GetComponentTypeId<T>();
         if (component_kinds_[id] == StorageKind::Sparse) {
-            return GetSparseStorage<T>().Get(e.GetIndex());
+            return SparseStorageAt<T>(id).Get(e.GetIndex());
         }
         const Archetype& a = *archetypes_[entity_archetype_[e.GetIndex()]];
         const std::ptrdiff_t col = a.ColumnIndex(id);
@@ -365,7 +365,7 @@ public:
         }
         const ComponentTypeId id = GetComponentTypeId<T>();
         if (component_kinds_[id] == StorageKind::Sparse) {
-            return GetSparseStorage<T>().TryGet(e.GetIndex());
+            return SparseStorageAt<T>(id).TryGet(e.GetIndex());
         }
         Archetype& a = *archetypes_[entity_archetype_[e.GetIndex()]];
         const std::ptrdiff_t col = a.ColumnIndex(id);
@@ -382,7 +382,7 @@ public:
         }
         const ComponentTypeId id = GetComponentTypeId<T>();
         if (component_kinds_[id] == StorageKind::Sparse) {
-            return GetSparseStorage<T>().TryGet(e.GetIndex());
+            return SparseStorageAt<T>(id).TryGet(e.GetIndex());
         }
         const Archetype& a = *archetypes_[entity_archetype_[e.GetIndex()]];
         const std::ptrdiff_t col = a.ColumnIndex(id);
@@ -399,7 +399,7 @@ public:
         }
         const ComponentTypeId id = GetComponentTypeId<T>();
         if (component_kinds_[id] == StorageKind::Sparse) {
-            return GetSparseStorage<T>().TryRemove(e.GetIndex());
+            return SparseStorageAt<T>(id).TryRemove(e.GetIndex());
         }
         return RemoveDense(e, id);
     }
@@ -418,7 +418,7 @@ public:
         }
         const ComponentTypeId id = GetComponentTypeId<T>();
         if (component_kinds_[id] == StorageKind::Sparse) {
-            GetSparseStorage<T>().Clear();
+            SparseStorageAt<T>(id).Clear();
             return;
         }
         std::vector<EntityId> affected;
@@ -604,16 +604,27 @@ public:
     template<typename T>
     ComponentStorage<T>& GetSparseStorage() {
         const auto id = GetComponentTypeId<T>();
-        return *static_cast<ComponentStorage<T>*>(sparse_storages_[id].get());
+        return SparseStorageAt<T>(id);
     }
 
     template<typename T>
     const ComponentStorage<T>& GetSparseStorage() const {
         const auto id = GetComponentTypeId<T>();
-        return *static_cast<const ComponentStorage<T>*>(sparse_storages_[id].get());
+        return SparseStorageAt<T>(id);
     }
 
 private:
+    // Internal only: callers have already validated the ID and storage kind.
+    template<typename T>
+    ComponentStorage<T>& SparseStorageAt(ComponentTypeId id) {
+        return *static_cast<ComponentStorage<T>*>(sparse_storages_[id].get());
+    }
+
+    template<typename T>
+    const ComponentStorage<T>& SparseStorageAt(ComponentTypeId id) const {
+        return *static_cast<const ComponentStorage<T>*>(sparse_storages_[id].get());
+    }
+
     template<typename T>
     ComponentTypeId RegisterComponentImpl(StorageKind kind) {
         static_assert(IsComponent<T>::value,

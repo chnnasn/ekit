@@ -382,5 +382,12 @@ concurrently with execution. A query must not outlive its world; concurrent call
 on the same query object require external synchronization. Iteration order is not
 guaranteed. Scalar parallel queries use the same candidate selection as serial ones.
 
+Scalar execution specializes by storage kind: dense-only queries bind column
+bases once per archetype and execution, while all-sparse queries skip entity
+archetype/row lookup and access the driving component directly by pool position.
+Mixed queries keep their membership checks. World component access reuses the
+validated type ID internally; entity generation and registration checks remain.
+See the [access-path comparison](benchmarks/access_paths.md) against `3e0daa8`.
+
 See [sparse query measurements](benchmarks/sparse_query.md) for the 1%, 10%, and
 100% coverage checks and their limits.

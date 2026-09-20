@@ -141,6 +141,50 @@ struct BoundComponents<TypeList<Ts...>> {
             return std::tuple<Ts*...>{b.Get(index, a, aid, row)...};
         }, bindings);
     }
+    // Resolve column bases per execution/archetype, never across structural changes.
+    auto DenseColumns(Archetype& a, std::size_t aid) const {
+        return std::apply([&](const auto&... b) {
+            return std::tuple<Ts*...>{
+                (b.columns[aid] < 0 ? nullptr : a.Column<Ts>(static_cast<std::size_t>(b.columns[aid])))...};
+        }, bindings);
+    }
+
+    template<bool Optional>
+    static auto DenseAt(const std::tuple<Ts*...>& bases, std::size_t row) {
+        return std::apply([&](auto*... p) {
+            if constexpr (Optional) return std::tuple<Ts*...>{(p ? p + row : nullptr)...};
+            else return std::tuple<Ts*...>{(p + row)...};
+        }, bases);
+    }
+
+    template<typename Driver>
+    auto SparseAt(EntityId index, std::size_t row) const {
+        return std::apply([&](const auto&... b) {
+            return std::tuple<Ts*...>{SparsePointer<Ts, Driver>(b, index, row)...};
+        }, bindings);
+    }
+
+    template<typename T, typename Driver>
+    static T* SparsePointer(const ComponentBinding<T>& b, EntityId index, std::size_t row) {
+        if constexpr (std::is_same_v<T, Driver>) return &b.sparse->ComponentAt(row);
+        else return b.sparse->TryGet(index);
+    }
+
+    template<typename F>
+    void DispatchSmallest(F&& fn) const {
+        const auto* driver = Smallest();
+        bool dispatched = false;
+        std::apply([&](const auto&... b) {
+            auto dispatch = [&](const auto& binding) {
+                if (!dispatched && binding.sparse == driver) {
+                    dispatched = true;
+                    fn(*binding.sparse);
+                }
+            };
+            (dispatch(b), ...);
+        }, bindings);
+    }
+
     const IComponentStorage* Smallest() const {
         const IComponentStorage* result = nullptr;
         std::apply([&](const auto&... b) {
@@ -277,14 +321,15 @@ public:
 
     template<bool Sparse, typename Visitor>
     void Visit(Visitor&& visit) const {
-        Execute(nullptr, [&](Entity e, Archetype& a, std::size_t row, const auto&, const auto&) {
-            visit(e, a, row);
+        Execute(nullptr, [&](Entity e, const auto&, const auto&) {
+            const auto index = e.GetIndex();
+            visit(e, *world_->Archetypes()[world_->EntityArchetype(index)], world_->EntityRow(index));
         });
     }
 
     template<typename F>
     void ForEach(F&& func) const {
-        Execute(nullptr, [&](Entity e, Archetype&, std::size_t, const auto& req, const auto& opt) {
+        Execute(nullptr, [&](Entity e, const auto& req, const auto& opt) {
             detail::InvokeBound(func, e, req, opt);
         });
     }
@@ -294,7 +339,7 @@ public:
 
     template<typename F>
     void ForEachParallel(ThreadPool& pool, F&& func) const {
-        Execute(&pool, [&](Entity e, Archetype&, std::size_t, const auto& req, const auto& opt) {
+        Execute(&pool, [&](Entity e, const auto& req, const auto& opt) {
             detail::InvokeBound(func, e, req, opt);
         });
     }
@@ -344,7 +389,7 @@ public:
 
     std::size_t Count() const {
         std::size_t count = 0;
-        Visit<true>([&](Entity, Archetype&, std::size_t) { ++count; });
+        Execute(nullptr, [&](Entity, const auto&, const auto&) { ++count; });
         return count;
     }
 
@@ -358,7 +403,11 @@ private:
         detail::PartitionIds(world_, req, dense_req, sparse_req);
         detail::PartitionIds(world_, exc, dense_exc, sparse_exc);
         has_sparse_ = !sparse_req.empty() || !sparse_exc.empty();
-        for (auto id : opt) has_sparse_ = has_sparse_ || world_->IsSparseId(id);
+        all_sparse_ = dense_req.empty() && dense_exc.empty();
+        for (auto id : opt) {
+            has_sparse_ = has_sparse_ || world_->IsSparseId(id);
+            all_sparse_ = all_sparse_ && world_->IsSparseId(id);
+        }
         required_.Bind(world_);
         optional_.Bind(world_);
         excluded_.Bind(world_);
@@ -370,23 +419,18 @@ private:
         cache_version_ = world_->StorageVersion();
     }
 
+    template<typename Required, typename Optional, typename Visitor>
+    void Emit(EntityId index, const Required& req, const Optional& opt, Visitor& visit) const {
+        const auto e = world_->GetEntity(index);
+        if constexpr (!std::is_same_v<PredicateT, detail::EmptyPredicate>) {
+            if (!detail::InvokeBound(predicate_, e, req, opt)) return;
+        }
+        visit(e, req, opt);
+    }
+
     template<typename Visitor>
     void Execute(ThreadPool* pool, Visitor&& visit) const {
         Prepare();
-        auto row_visit = [&](EntityId index, std::size_t aid, std::size_t row) {
-            if (!matches_[aid]) return;
-            auto& a = *world_->Archetypes()[aid];
-            auto req = required_.Get(index, a, aid, row);
-            if (!std::apply([](auto*... p) { return ((p != nullptr) && ...); }, req)) return;
-            auto exc = excluded_.Get(index, a, aid, row);
-            if (std::apply([](auto*... p) { return ((p != nullptr) || ...); }, exc)) return;
-            auto opt = optional_.Get(index, a, aid, row);
-            const auto e = world_->GetEntity(index);
-            if constexpr (!std::is_same_v<PredicateT, detail::EmptyPredicate>) {
-                if (!detail::InvokeBound(predicate_, e, req, opt)) return;
-            }
-            visit(e, a, row, req, opt);
-        };
         auto run = [&](std::size_t count, auto&& body) {
             if (pool) {
                 detail::ParallelFor(*pool, count, [&](std::size_t begin, std::size_t end) {
@@ -395,6 +439,47 @@ private:
             } else {
                 for (std::size_t i = 0; i < count; ++i) body(i);
             }
+        };
+        if (!has_sparse_) {
+            // Dense membership is already known from the archetype signature.
+            for (std::size_t aid = 0; aid < matches_.size(); ++aid) {
+                if (!matches_[aid]) continue;
+                auto& a = *world_->Archetypes()[aid];
+                const auto req_bases = required_.DenseColumns(a, aid);
+                const auto opt_bases = optional_.DenseColumns(a, aid);
+                run(a.RowCount(), [&](std::size_t row) {
+                    auto req = required_.template DenseAt<false>(req_bases, row);
+                    auto opt = optional_.template DenseAt<true>(opt_bases, row);
+                    Emit(a.entities[row], req, opt, visit);
+                });
+            }
+            return;
+        }
+        if (all_sparse_) {
+            // Dispatch once by driver type: its own component needs no sparse lookup.
+            required_.DispatchSmallest([&]<typename T>(ComponentStorage<T>& driver) {
+                const auto& entities = driver.Entities();
+                run(entities.size(), [&](std::size_t row) {
+                    const auto index = entities[row];
+                    auto req = required_.template SparseAt<T>(index, row);
+                    if (!std::apply([](auto*... p) { return ((p != nullptr) && ...); }, req)) return;
+                    auto exc = excluded_.template SparseAt<T>(index, row);
+                    if (std::apply([](auto*... p) { return ((p != nullptr) || ...); }, exc)) return;
+                    auto opt = optional_.template SparseAt<T>(index, row);
+                    Emit(index, req, opt, visit);
+                });
+            });
+            return;
+        }
+        auto row_visit = [&](EntityId index, std::size_t aid, std::size_t row) {
+            if (!matches_[aid]) return;
+            auto& a = *world_->Archetypes()[aid];
+            auto req = required_.Get(index, a, aid, row);
+            if (!std::apply([](auto*... p) { return ((p != nullptr) && ...); }, req)) return;
+            auto exc = excluded_.Get(index, a, aid, row);
+            if (std::apply([](auto*... p) { return ((p != nullptr) || ...); }, exc)) return;
+            auto opt = optional_.Get(index, a, aid, row);
+            Emit(index, req, opt, visit);
         };
         if (const auto* driver = required_.Smallest()) {
             const auto& entities = driver->Entities();
@@ -413,6 +498,7 @@ private:
 
     mutable std::size_t cache_version_ = (std::numeric_limits<std::size_t>::max)();
     mutable bool has_sparse_ = false;
+    mutable bool all_sparse_ = false;
     mutable detail::BoundComponents<RequiredList> required_;
     mutable detail::BoundComponents<OptionalList> optional_;
     mutable detail::BoundComponents<ExcludedList> excluded_;

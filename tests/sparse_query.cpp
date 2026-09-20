@@ -141,3 +141,121 @@ TEST(QueryRegistrationIsStillExplicit) {
     world.RegisterSparseComponent<Optional>();
     CHECK_EQ(query.Count(), 0u);
 }
+
+TEST(SparseTypedDriverSwitchAndAliasing) {
+    ekit::World world;
+    world.RegisterSparseComponent<Common>();
+    world.RegisterSparseComponent<Rare>();
+    world.RegisterSparseComponent<Optional>();
+    world.RegisterSparseComponent<Excluded>();
+    std::vector<ekit::Entity> entities;
+    for (int i = 0; i < 8; ++i) {
+        auto e = world.Create(); entities.push_back(e);
+        world.Add<Common>(e, i);
+        if (i < 4) world.Add<Rare>(e, i);
+        if (i % 2 == 0) world.Add<Optional>(e, i);
+    }
+    auto query = world.Query<Common, Rare>().Optional<Rare, Optional>().Without<Excluded>();
+    auto check = [&] {
+        std::size_t count = 0;
+        query.ForEach([&](ekit::Entity e, Common& c, Rare& r, Rare* alias, Optional* o) {
+            CHECK(&r == alias);
+            CHECK_EQ(c.value, r.value);
+            CHECK(o == world.TryGet<Optional>(e));
+            ++count;
+        });
+        return count;
+    };
+    CHECK_EQ(check(), 4u); // Rare drives
+    for (int i = 1; i < 8; ++i) world.Remove<Common>(entities[i]);
+    CHECK_EQ(check(), 1u); // Common now drives, no storage version change
+    world.Add<Excluded>(entities[0]);
+    CHECK_EQ(check(), 0u);
+    world.Remove<Excluded>(entities[0]);
+    CHECK_EQ(check(), 1u);
+    CHECK_EQ(world.Query<Common>().Without<Common>().Count(), 0u);
+    std::size_t duplicates = 0;
+    world.Query<Common, Common>().ForEach([&](Common& a, Common& b) {
+        CHECK(&a == &b); ++duplicates;
+    });
+    CHECK_EQ(duplicates, 1u); // typed dispatch must not execute twice
+    query.Visit<true>([&](ekit::Entity e, ekit::Archetype& a, std::size_t row) {
+        CHECK_EQ(a.entities[row], e.GetIndex());
+    });
+}
+
+TEST(DenseFastPathOptionalColumnsAndReallocation) {
+    ekit::World world;
+    world.RegisterComponents<Common, Rare, Optional, Excluded>();
+    auto query = world.Query<Common, Rare>().Optional<Optional>().Without<Excluded>()
+        .Where([](Common& c, Rare&, Optional* o) { return c.value > 0 && (!o || o->value > 0); });
+    std::vector<ekit::Entity> entities;
+    for (int i = 0; i < 1000; ++i) {
+        auto e = world.Create(); entities.push_back(e);
+        world.Add<Common>(e, i);
+        world.Add<Rare>(e, i);
+        if (i % 2 == 0) world.Add<Optional>(e, i);
+        if (i % 5 == 0) world.Add<Excluded>(e);
+    }
+    CHECK_EQ(query.Count(), 800u);
+    world.ReserveArchetype<Common, Rare>(10000);
+    world.ReserveArchetype<Common, Rare, Optional>(10000);
+    std::size_t count = 0;
+    query.ForEach([&](ekit::Entity e, Common& c, Rare& r, Optional* o) {
+        CHECK(&c == &world.Get<Common>(e));
+        CHECK(o == world.TryGet<Optional>(e));
+        CHECK_EQ(c.value, r.value); ++count;
+    });
+    CHECK_EQ(count, 800u);
+    ekit::ThreadPool pool(2);
+    std::atomic<std::size_t> parallel_count{0};
+    query.ForEachParallel(pool, [&](Common&, Rare&, Optional*) { ++parallel_count; });
+    CHECK_EQ(parallel_count.load(), count);
+    world.Remove<Rare>(entities[1]);
+    CHECK_EQ(query.Count(), 799u);
+    world.Destroy(entities[2]);
+    CHECK_EQ(query.Count(), 798u);
+}
+
+TEST(SparseAccessStillChecksHandlesAndRegistration) {
+    ekit::World world;
+    world.RegisterSparseComponent<Common>();
+    const auto& read_only = world;
+    auto e = world.Create();
+    CHECK(world.TryGet<Common>(e) == nullptr);
+    CHECK(read_only.TryGet<Common>(e) == nullptr);
+    CHECK_THROWS_AS(world.Get<Common>(e), ekit::EkitException);
+    CHECK_THROWS_AS(read_only.Get<Common>(e), ekit::EkitException);
+    world.Set<Common>(e, 42);
+    CHECK_EQ(read_only.Get<Common>(e).value, 42);
+    CHECK(read_only.TryGet<Common>(e) == world.TryGet<Common>(e));
+    world.Destroy(e);
+    auto reused = world.Create();
+    world.Add<Common>(reused, 43);
+    CHECK(!world.Has<Common>(e));
+    CHECK(world.TryGet<Common>(e) == nullptr);
+    CHECK(read_only.TryGet<Common>(e) == nullptr);
+    CHECK_THROWS_AS(world.Get<Common>(e), ekit::EkitException);
+    CHECK_THROWS_AS(read_only.Get<Common>(e), ekit::EkitException);
+    CHECK_THROWS_AS(world.Get<Optional>(reused), ekit::EkitException);
+    CHECK_THROWS_AS(read_only.TryGet<Optional>(reused), ekit::EkitException);
+}
+
+TEST(SparseRequiredWithDenseOptionalUsesEntityLocation) {
+    ekit::World world;
+    world.RegisterSparseComponent<Common>();
+    world.RegisterComponent<Optional>();
+    auto query = world.Query<Common>().Optional<Optional>();
+    CHECK_EQ(query.Count(), 0u);
+    for (int i = 0; i < 10; ++i) {
+        auto e = world.Create();
+        world.Add<Common>(e, i);
+        if (i % 2 == 0) world.Add<Optional>(e, i);
+    }
+    std::size_t with_optional = 0;
+    query.ForEach([&](Common& c, Optional* o) {
+        if (o) { CHECK_EQ(o->value, c.value); ++with_optional; }
+        else CHECK(c.value % 2 != 0);
+    });
+    CHECK_EQ(with_optional, 5u);
+}

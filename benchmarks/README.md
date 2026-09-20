@@ -2,6 +2,10 @@
 
 The [sparse query coverage benchmark](sparse_query.md) measures the sparse query
 optimization separately at 1%, 10%, and 100% coverage (2026-09-21).
+The subsequent [access-path benchmark](access_paths.md) compares dense/sparse
+iteration, random reads, creation, component churn, and destruction to `3e0daa8`.
+The [TomCat integration audit](tomcat_integration.md) checks the actual dev_ekit
+SceneWorld View/Get adapter separately; its loops do not call World::Query.
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
