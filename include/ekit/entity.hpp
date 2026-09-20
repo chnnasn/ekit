@@ -60,7 +60,7 @@ private:
     std::uint64_t m_value = 0;
 };
 
-const Entity Entity::Null{};
+inline const Entity Entity::Null{};
 
 static_assert(sizeof(Entity) == sizeof(std::uint64_t),
               "ekit::Entity must be exactly 8 bytes (zero overhead).");

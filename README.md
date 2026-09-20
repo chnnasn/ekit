@@ -329,3 +329,14 @@ examples/
 ## License
 
 [MIT](LICENSE) © 2026 chnnasn
+
+### Owning sparse components
+
+Dense components must be trivially copyable. Register components containing
+`std::string`, containers, or resource owners with `RegisterSparseComponent<T>()`.
+Sparse components are default constructible, move assignable, and not over-aligned.
+Sparse storage uses paged storage: appending preserves existing component references.
+Swap-and-pop removal invalidates references to the removed component and the last
+component moved into its slot; clearing or destroying the world invalidates all
+references. Structural mutation during query iteration is not supported.
+A type cannot switch between dense and sparse storage within the same world.
