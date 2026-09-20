@@ -1,8 +1,13 @@
 # Sparse query coverage benchmark
 
+[English](sparse_query.md) | [简体中文](sparse_query.zh-CN.md)
+
+Historical version-to-version measurement. See the [latest EnTT comparison](ecs_comparison.md)
+for ekit `3fcda56` and TomCat adapter `01f923f`.
+
 Measured 2026-09-21 on Windows x64 with MSVC 19.50.35724, Release (/O2), C++20.
 Baseline: repository commit `c212e60`, compiled against its original headers.
-Optimized: this change, using the same `sparse_query.cpp` benchmark.
+Optimized: `3e0daa8`, using the same `sparse_query.cpp` benchmark.
 
 100,000 entities have Common; Rare occurs on 1%, 10%, or 100% of entities,
 distributed by entity index modulo 100. Both components remain sparse.

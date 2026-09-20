@@ -1,7 +1,12 @@
 # Specialized query and random-access paths
 
+[English](access_paths.md) | [简体中文](access_paths.zh-CN.md)
+
+This is a local version-to-version measurement. The [latest EnTT comparison](ecs_comparison.md)
+separately reports ekit `3fcda56` and TomCat adapter `01f923f`.
+
 Measured 2026-09-21, Windows x64, MSVC 19.50.35724, C++20 Release (/O2).
-Baseline headers are from `3e0daa8`; optimized headers are from this change.
+Baseline headers are from `3e0daa8`; optimized headers are from `3fcda56`.
 Both binaries compile the exact same `access_paths.cpp` benchmark. These results
 compare ekit versions, not EnTT, and are not the external engine integration test.
 

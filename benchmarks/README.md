@@ -1,13 +1,36 @@
 # ekit benchmarks
 
-The [sparse query coverage benchmark](sparse_query.md) measures the sparse query
-optimization separately at 1%, 10%, and 100% coverage (2026-09-21).
-The subsequent [access-path benchmark](access_paths.md) compares dense/sparse
-iteration, random reads, creation, component churn, and destruction to `3e0daa8`.
-The [TomCat integration audit](tomcat_integration.md) checks the actual dev_ekit
-SceneWorld View/Get adapter separately; its loops do not call World::Query.
-
 [English](README.md) | [简体中文](README.zh-CN.md)
+
+## Latest ECS comparison
+
+The [full report](ecs_comparison.md) compares ekit `3fcda56` and TomCat adapter
+`01f923f` with EnTT 3.15.0. Test environment:
+[TomCat_Engine / dev_ekit](https://github.com/chnnasn/TomCat_Engine/tree/dev_ekit).
+Intel Core i7-14650HX, Windows x64, MSVC Release, single thread, six rounds with
+the first discarded and the remaining five summarized by their median.
+
+For 100,000 entities, sparse traversal takes 49.19 ms versus EnTT's 35.85 ms
+(1.37×), random reads 13.97 versus 3.72 ms, and creation 8.80 versus 4.07 ms.
+Sparse churn takes 48% less time and destruction 71% less. Dense traversal takes
+13.74 ms, but dense churn costs 6.55× EnTT. SceneWorld::ForEach takes 0.575,
+5.786 and 41.959 ms at 1%, 10% and 100% coverage, respectively, using its pinned
+dependency. These are workload-specific results, not whole-engine frame rates.
+
+## Report index
+
+| Report | Versions / scope |
+| --- | --- |
+| [Latest EnTT comparison](ecs_comparison.md) | ekit `3fcda56`, adapter `01f923f`, EnTT 3.15.0; supplied retest |
+| [Sparse query coverage](sparse_query.md) | `c212e60` → `3e0daa8`; local microbenchmark |
+| [Specialized access paths](access_paths.md) | `3e0daa8` → `3fcda56`; local microbenchmark |
+| [Historical TomCat adapter audit](tomcat_integration.md) | Adapter `5a89e22`, before ForEach; View/Get comparison |
+| Historical Boids data below | `227ea33`; separate simulation and parallelism settings |
+
+The reports retain their own raw-data links and methods. The supplied latest
+retest has no per-round raw output checked into this repository yet.
+
+## Historical Boids benchmark
 
 Raw data, test conditions and analysis for the ekit Boids benchmark and the
 ekit vs EnTT comparison. Generated on **2026-08-14**.

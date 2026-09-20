@@ -2,6 +2,9 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
+最新 ekit `3fcda56` / TomCat `01f923f` 与 EnTT 3.15.0 的对比见
+[ECS 基准报告](../../benchmarks/ecs_comparison.zh-CN.md)。下方 Boids 耗时与录制属于不同工作负载的历史测量。
+
 这是一个基于 **ekit** 实现的 Craig Reynolds Boids 群集算法案例。它演示了**显式组件注册、流式查询、声明式 `Reads/Writes` 系统依赖和自动并行调度**，并使用空间哈希网格进行邻居查询。
 
 ![boids](boids.gif)

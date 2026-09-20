@@ -2,6 +2,32 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
+## 最新 ECS 对比
+
+[完整报告](ecs_comparison.zh-CN.md)对比 ekit `3fcda56`、TomCat 适配层 `01f923f` 与 EnTT 3.15.0。
+测试环境：[TomCat_Engine / dev_ekit](https://github.com/chnnasn/TomCat_Engine/tree/dev_ekit)。
+Intel Core i7-14650HX、Windows x64、MSVC Release，单线程运行六轮，舍弃首轮，取其余五轮中位数。
+
+10 万实体下，稀疏遍历为 49.19 ms，EnTT 为 35.85 ms（1.37 倍）；随机读取为 13.97 对 3.72 ms，
+创建为 8.80 对 4.07 ms。稀疏增删耗时减少 48%，销毁减少 71%。密集遍历为 13.74 ms，
+但密集增删耗时为 EnTT 的 6.55 倍。SceneWorld::ForEach 使用分支固定依赖，
+在 1%、10%、100% 覆盖率下分别耗时 0.575、5.786、41.959 ms。
+这些结果仅代表对应工作负载，不能等同于整个引擎帧率。
+
+## 报告索引
+
+| 报告 | 版本与范围 |
+| --- | --- |
+| [最新 EnTT 对比](ecs_comparison.zh-CN.md) | ekit `3fcda56`、适配层 `01f923f`、EnTT 3.15.0；提供的重测报告 |
+| [稀疏查询覆盖率](sparse_query.zh-CN.md) | `c212e60` → `3e0daa8`；本地微基准 |
+| [专用查询与访问路径](access_paths.zh-CN.md) | `3e0daa8` → `3fcda56`；本地微基准 |
+| [历史 TomCat 接入审计](tomcat_integration.zh-CN.md) | 适配层 `5a89e22`；新增 ForEach 前的 View/Get 对照 |
+| 下方历史 Boids 数据 | `227ea33`；独立模拟与并行配置 |
+
+各报告保留各自的原始数据链接和测试方法。最新重测的逐轮原始输出尚未收录到本仓库。
+
+## 历史 Boids 测试
+
 ekit Boids 基准与 ekit vs EnTT 对比的原始数据、测试条件与分析。生成于 **2026-08-14**。
 
 ## 代码版本

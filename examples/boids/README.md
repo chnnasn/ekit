@@ -2,6 +2,10 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
+For the latest ekit `3fcda56` / TomCat `01f923f` versus EnTT 3.15.0 results, see
+the [ECS benchmark report](../../benchmarks/ecs_comparison.md). The Boids timings
+and recordings below are historical measurements of a different workload.
+
 An implementation of Craig Reynolds' Boids flocking algorithm built on **ekit**,
 serving as a case study for the library. It demonstrates
 ekit's core capabilities: **explicit component registration, fluent queries,

@@ -1,5 +1,15 @@
 # TomCat dev_ekit integration audit
 
+[English](tomcat_integration.md) | [简体中文](tomcat_integration.zh-CN.md)
+
+**Historical audit of adapter `5a89e22`, before `01f923f`.** The latter adds
+const/mutable SceneWorld::ForEach, migrates seven animation/particle loops and
+removes TryGet's duplicate Has check. It binds ekit pools directly, rather than
+delegating to World::Query. The pinned dependency remains unchanged. See the
+[latest EnTT/SceneWorld comparison](ecs_comparison.md) and
+[test environment](https://github.com/chnnasn/TomCat_Engine/tree/dev_ekit).
+The source line numbers and recommendations below describe the older snapshot.
+
 Reviewed 2026-09-21. The requested `E:/Github/TomCat/_Engine` directory was absent;
 the local repository is `E:/Github/TomCat_Engine`, branch `dev_ekit`, commit
 `5a89e22af3f8d3cf52728c0a80dc1153f63de8ad`. Files were read with `git show` without
@@ -49,7 +59,7 @@ Same compiler as the access-path tests: MSVC 19.50.35724, Windows x64, Release.
 100,000 entities; six rounds per binary, discard the first, median of five.
 The timer covers 200 View + Get updates; creation and picking-ID allocation are
 outside it. Both binaries use the same adapter source. Baseline is ekit `3e0daa8`,
-optimized is the current working tree. This comparison does not measure the old
+optimized is ekit `3fcda56`. This comparison does not measure the old
 vendored `82d4de67` revision. Baseline executes before optimized.
 
 | Coverage | Candidates | 3e0daa8 ms | Current ms | Time reduction |
@@ -64,7 +74,7 @@ counts also agree. Raw data: [baseline](tomcat_scene_baseline.csv),
 [optimized](tomcat_scene_optimized.csv). Shared-machine microbenchmark limitations
 apply; the complete TomCat application and native regression suite were not built.
 
-## Implications for the next integration change
+## Recommendations recorded before 01f923f
 
 1. Update the vendored dependency and provenance together, then run TomCat's native
    regressions. This audit did not modify TomCat or update its dependency pin.
