@@ -161,6 +161,16 @@ public:
         }
     }
 
+    void Reserve(std::size_t capacity) {
+        entities.reserve(capacity);
+        for (std::size_t k = 0; k < columns.size(); ++k) {
+            if (capacity > columns[k].max_size() / sizes[k]) {
+                throw EkitException("ekit: archetype capacity is too large.");
+            }
+            columns[k].reserve(capacity * sizes[k]);
+        }
+    }
+
     // Copies row `from` into row `to` byte-wise. Both rows must exist.
     void CopyRow(std::size_t from, std::size_t to) {
         for (std::size_t k = 0; k < columns.size(); ++k) {
@@ -208,6 +218,7 @@ class IComponentStorage {
 public:
     virtual ~IComponentStorage() = default;
     virtual std::size_t Size() const = 0;
+    virtual const std::vector<EntityId>& Entities() const = 0;
     virtual bool Contains(EntityId index) const = 0;
     virtual bool TryRemove(EntityId index) = 0;
     virtual void Clear() = 0;
@@ -303,6 +314,14 @@ public:
 
     EntityId EntityAt(std::size_t dense_index) const {
         return entities_[dense_index];
+    }
+
+    const std::vector<EntityId>& Entities() const override { return entities_; }
+
+    // Reserve indices without relocating the reference-stable deque elements.
+    void Reserve(std::size_t capacity, std::size_t entity_capacity) {
+        entities_.reserve(capacity);
+        sparse_.reserve(entity_capacity);
     }
 
     T& ComponentAt(std::size_t dense_index) {

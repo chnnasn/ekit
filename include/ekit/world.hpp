@@ -557,6 +557,44 @@ public:
         return sparse_storages_;
     }
 
+    std::size_t StorageVersion() const { return storage_version_; }
+    std::size_t EntityArchetype(EntityId index) const { return entity_archetype_[index]; }
+    std::size_t EntityRow(EntityId index) const { return entity_row_[index]; }
+
+    void ReserveEntities(std::size_t capacity) {
+        if (capacity >= entities_.max_size()) {
+            throw EkitException("ekit: entity capacity is too large.");
+        }
+        entities_.reserve(capacity + 1);
+        alive_.reserve(capacity + 1);
+        entity_archetype_.reserve(capacity + 1);
+        entity_row_.reserve(capacity + 1);
+        free_list_.reserve(capacity);
+        archetypes_[EmptyArchetypeId()]->Reserve(capacity);
+    }
+
+    template<typename T>
+    void ReserveSparseComponent(std::size_t capacity) {
+        const auto id = GetComponentTypeId<T>();
+        if (!IsSparseId(id)) {
+            throw EkitException("ekit: ReserveSparseComponent requires sparse storage.");
+        }
+        GetSparseStorage<T>().Reserve(capacity, entities_.capacity());
+    }
+
+    // Reserve one exact dense signature, including intermediate signatures
+    // when entities are built through successive Add calls.
+    template<typename... Ts>
+    void ReserveArchetype(std::size_t capacity) {
+        std::vector<ComponentTypeId> ids{GetComponentTypeId<Ts>()...};
+        for (auto id : ids) {
+            if (IsSparseId(id)) throw EkitException("ekit: ReserveArchetype requires dense components.");
+        }
+        std::sort(ids.begin(), ids.end());
+        ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+        archetypes_[GetOrCreateArchetype(ids)]->Reserve(capacity);
+    }
+
     // Whether a given component id uses sparse storage.
     bool IsSparseId(ComponentTypeId id) const {
         return id < component_kinds_.size() && component_kinds_[id] == StorageKind::Sparse;
@@ -601,6 +639,7 @@ private:
             component_infos_[id] = ComponentInfo{sizeof(T), alignof(T), ComponentNameOf<T>()};
             component_kinds_[id] = kind;
             ++storage_count_;
+            ++storage_version_;
         }
         if (kind == StorageKind::Sparse) {
             if (static_cast<std::size_t>(id) >= sparse_storages_.size()) {
@@ -704,6 +743,7 @@ private:
         const std::size_t id = archetypes_.size();
         archetypes_.push_back(std::move(a));
         archetype_index_.emplace(types, id);
+        ++storage_version_;
         return id;
     }
 
@@ -766,6 +806,7 @@ private:
     std::vector<ComponentInfo> component_infos_{ComponentInfo{}};
     std::vector<StorageKind> component_kinds_{StorageKind::Dense};
     std::size_t storage_count_ = 0;
+    std::size_t storage_version_ = 0;
 
     std::vector<std::unique_ptr<Archetype>> archetypes_;
     std::map<std::vector<ComponentTypeId>, std::size_t> archetype_index_;

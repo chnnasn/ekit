@@ -340,3 +340,47 @@ Swap-and-pop removal invalidates references to the removed component and the las
 component moved into its slot; clearing or destroying the world invalidates all
 references. Structural mutation during query iteration is not supported.
 A type cannot switch between dense and sparse storage within the same world.
+
+### Choosing storage and reserving capacity
+
+Keep frequently added/removed components and resource owners sparse. Dense storage
+is appropriate for trivially copyable components that are iterated often and rarely
+added or removed. Audit retained pointers/references before moving a component
+(including Transform) to dense storage: column growth, reserve, and archetype moves
+can invalidate them. Sparse storage preserves references on append and reserve,
+but its swap-and-pop removal is **not** fully reference-stable.
+
+```cpp
+world.RegisterSparseComponent<Position>();
+world.RegisterSparseComponent<Velocity>();
+world.ReserveEntities(100000);
+world.ReserveSparseComponent<Position>(100000);
+world.ReserveSparseComponent<Velocity>(1000);
+auto moving = world.Query<Position, Velocity>();
+moving.ForEach([](Position& p, Velocity& v) { /* update */ });
+```
+
+`ReserveEntities` reserves total entity capacity and the empty archetype.
+`ReserveSparseComponent<T>` reserves the pool's entity and sparse-index arrays;
+the reference-stable component deque still allocates pages as needed. Call
+`ReserveEntities` first to size the sparse index reservation for the entity range.
+`ReserveArchetype<Ts...>(capacity)` reserves one exact dense signature; reserve
+intermediate signatures as well when using successive `Add` calls.
+
+Queries with required sparse components (including `With`) start from the smallest
+required sparse pool. `Optional` and `Without` never select the driving pool.
+`CandidateCount()` reports the candidates before filters. Without required sparse
+components, queries scan matching archetypes. Required/optional component pointers
+are resolved once per candidate and shared by `Where` and the scalar callback.
+
+Reuse a query object to retain its pool bindings and matching archetype/column
+metadata. Registration and newly created archetypes invalidate that metadata;
+pool sizes and entity locations are read anew on each execution. Cached bindings
+do not retain column data pointers, so reservation and relocation between calls
+are supported. Do not structurally mutate the world inside a query callback or
+concurrently with execution. A query must not outlive its world; concurrent calls
+on the same query object require external synchronization. Iteration order is not
+guaranteed. Scalar parallel queries use the same candidate selection as serial ones.
+
+See [sparse query measurements](benchmarks/sparse_query.md) for the 1%, 10%, and
+100% coverage checks and their limits.

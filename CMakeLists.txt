@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.14)
 project(ekit VERSION 0.1.0 LANGUAGES CXX)
 
 option(EKIT_BUILD_TESTS "Build the ekit test suite" ON)
+option(EKIT_BUILD_QUERY_BENCHMARK "Build the sparse query coverage benchmark" OFF)
 option(EKIT_BUILD_EXAMPLES "Build the ekit examples" ON)
 option(EKIT_BUILD_BOIDS "Build the boids case study" ON)
 option(EKIT_BUILD_BOIDS_LIVE "Build the boids GLFW live viewer (needs local GLFW)" ON)
@@ -27,6 +28,11 @@ target_link_libraries(ekit INTERFACE Threads::Threads)
 # ---------------------------------------------------------------------------
 # Examples
 # ---------------------------------------------------------------------------
+if (EKIT_BUILD_QUERY_BENCHMARK)
+    add_executable(ekit_sparse_query_bench benchmarks/sparse_query.cpp)
+    target_link_libraries(ekit_sparse_query_bench PRIVATE ekit)
+endif()
+
 if (EKIT_BUILD_EXAMPLES)
     add_executable(ekit_basic examples/basic.cpp)
     target_link_libraries(ekit_basic PRIVATE ekit)
@@ -47,7 +53,7 @@ endif()
 # ---------------------------------------------------------------------------
 if (EKIT_BUILD_TESTS)
     enable_testing()
-    add_executable(ekit_tests tests/tests.cpp tests/sparse_lifetime.cpp)
+    add_executable(ekit_tests tests/tests.cpp tests/sparse_lifetime.cpp tests/sparse_query.cpp)
     target_link_libraries(ekit_tests PRIVATE ekit)
     add_test(NAME ekit_tests COMMAND ekit_tests)
 endif()
