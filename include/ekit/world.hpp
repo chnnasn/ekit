@@ -96,6 +96,8 @@ public:
 
     template<typename T>
     ComponentTypeId RegisterComponent() {
+        static_assert(std::is_trivially_copyable_v<T>,
+                      "ekit: dense components must be trivially copyable; use RegisterSparseComponent<T>().");
         return RegisterComponentImpl<T>(StorageKind::Dense);
     }
 
@@ -579,8 +581,6 @@ private:
         static_assert(IsComponent<T>::value,
                       "ekit: T is not declared as a component. Add 'EKIT_COMPONENT(T)' after "
                       "declaring T, or specialize ekit::IsComponent<T>.");
-        static_assert(std::is_trivially_copyable_v<T>,
-                      "ekit: component types must be trivially copyable (POD-like).");
         static_assert(std::is_default_constructible_v<T>,
                       "ekit: component types must be default constructible.");
         static_assert(alignof(T) <= alignof(std::max_align_t),
@@ -593,6 +593,9 @@ private:
         if (static_cast<std::size_t>(id) >= component_infos_.size()) {
             component_infos_.resize(static_cast<std::size_t>(id) + 1);
             component_kinds_.resize(static_cast<std::size_t>(id) + 1);
+        }
+        if (component_infos_[id].size != 0 && component_kinds_[id] != kind) {
+            throw EkitException("ekit: component already registered with a different storage kind.");
         }
         if (component_infos_[id].size == 0) {
             component_infos_[id] = ComponentInfo{sizeof(T), alignof(T), ComponentNameOf<T>()};

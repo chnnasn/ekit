@@ -47,7 +47,7 @@ endif()
 # ---------------------------------------------------------------------------
 if (EKIT_BUILD_TESTS)
     enable_testing()
-    add_executable(ekit_tests tests/tests.cpp)
+    add_executable(ekit_tests tests/tests.cpp tests/sparse_lifetime.cpp)
     target_link_libraries(ekit_tests PRIVATE ekit)
     add_test(NAME ekit_tests COMMAND ekit_tests)
 endif()

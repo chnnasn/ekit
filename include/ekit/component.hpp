@@ -1,11 +1,12 @@
 #pragma once
 // ekit - component.hpp
 //
-// Components are plain POD structs that must be explicitly declared with the
+// Components must be explicitly declared with the
 // EKIT_COMPONENT(T) macro (or an explicit specialization of ekit::IsComponent)
 // and explicitly registered at runtime with world.RegisterComponent<T>().
 //
-// Storage is archetype-based: all entities that share the exact same component
+// Dense storage requires trivially copyable components; sparse storage supports
+// owning components. Dense storage is archetype-based: entities with the same component
 // set live in one Archetype, and each component is a contiguous SoA column
 // aligned by row. This lets queries hand out raw, SIMD-friendly component
 // pointers for a whole batch at once (ForEachBatch).
@@ -16,6 +17,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstring>
+#include <deque>
 #include <typeindex>
 #include <vector>
 
@@ -213,7 +215,9 @@ public:
     virtual const char* GetTypeName() const = 0;
 };
 
-// Sparse-set storage: dense array + entity array + sparse index. Removal is
+// Sparse-set storage: paged components + entity array + sparse index. Appending
+// preserves component references. Removal invalidates the removed and moved-last
+// component references; Clear invalidates all references. Removal is
 // swap-and-pop (O(1)); random access is O(1) via the sparse index.
 template<typename T>
 class ComponentStorage final : public IComponentStorage {
@@ -264,7 +268,12 @@ public:
         }
         const std::size_t dense_index = components_.size();
         components_.emplace_back(std::forward<Args>(args)...);
-        entities_.push_back(index);
+        try {
+            entities_.push_back(index);
+        } catch (...) {
+            components_.pop_back();
+            throw;
+        }
         sparse_[index] = static_cast<std::uint32_t>(dense_index) + 1;
         return components_.back();
     }
@@ -319,7 +328,7 @@ private:
         }
     }
 
-    std::vector<T> components_;
+    std::deque<T> components_;
     std::vector<EntityId> entities_;
     std::vector<std::uint32_t> sparse_;
 };
