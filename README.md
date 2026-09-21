@@ -299,52 +299,27 @@ creation overhead while preserving reference validity, lifetimes and query
 semantics. **These results do not generalize directly to complex components,
 multithreaded systems or whole-engine frame rates.**
 
-### Historical Boids benchmark
+### Current Boids retest
 
-The separate Boids workload below uses different test conditions from the
-single-threaded ECS measurements above.
+Current `055e1c9` Boids (core optimization `4d2d014`) was rerun on 2026-09-21: i7-14650HX, Windows x64, MSVC Release, 800×600, seed 20260810, 20 warmup + 120 timed steps, five-round medians after discarding the first of six rounds. Primary charts cover 1/2/3/4 threads; 24 threads is listed separately. Three threads was a supplemental run.
 
-Full conditions, raw data and the analysis scripts live in
-[`benchmarks/`](benchmarks/README.md). Headline results (Intel i7-14650HX, 24
-threads, MSVC Release /O2, world 800x600, seed 20260810, 120 timed steps + 20
-warmup):
+10,000 boids, milliseconds per step; lower is better:
 
-### Per-step cost as boid count increases
+| Path | 1 thread | 2 threads | 3 threads | 4 threads | 24 threads |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| System scheduler | 102.12 | 59.69 | 67.71 | 40.35 | 40.31 |
+| Data-parallel queries + grid | 100.90 | 51.02 | 57.97 | 25.63 | 8.49 |
 
-| from | to | x boids | x time | exponent |
-| --- | --- | --- | --- | --- |
-| 200 | 500 | 2.5x | 4.82x | 1.72 |
-| 1000 | 2000 | 2.0x | 3.14x | 1.65 |
-| 5000 | 10000 | 2.0x | 3.26x | 1.71 |
+![Boids cost](benchmarks/chart_boids_current_cost.en.png)
 
-Per-step cost scales as n^1.5..n^1.7 and the exponent **rises toward 2 with
-density**: the world is fixed, so doubling the boids doubles the density and
-the number of neighbors per boid - the neighbor search is O(n x neighbors),
-i.e. O(n^2) in the uniform-density limit. Throughput falls from ~2.65M boids/s
-(200 boids) to ~238k boids/s (10000 boids).
+![Boids speedup](benchmarks/chart_boids_current_speedup.en.png)
 
-![per-step cost vs boids](benchmarks/chart_cost_vs_boids.png)
+Speedups use each path's own single-thread median; interpret the two paths separately. Boids uses dense components, so sparse paging gains do not directly transfer. Position checksum checks passed for all tested parallel configurations; timings exclude creation and rendering. Neither EnTT nor the old revision was rerun, so cross-date changes do not establish version speedups.
 
-### Parallel scaling by thread count
+[Full report, raw data and reproduction](benchmarks/boids_retest.md).
 
-| boids | t2 | t4 | t24 |
-| --- | --- | --- | --- |
-| 200 | 1.26x | 1.97x | 1.92x |
-| 10000 | 1.69x | 2.50x | 2.51x |
+Historical Boids and EnTT v4 comparisons remain in the [benchmark index](benchmarks/README.md); old curves and GIFs do not represent this run.
 
-In these measurements, speedup changes little beyond **4 threads**. The dependency
-graph has 4 parallel rule systems, while the grid rebuild and phase-2 chain are
-serial; the observed speedup is therefore ~2.0-2.5x rather than 4x.
-
-![speedup vs threads](benchmarks/chart_speedup_vs_threads.png)
-
-### ekit vs EnTT (same algorithm, EnTT v4)
-
-On this Windows/MSVC build, the ekit scheduler is ~20% slower than EnTT at 1
-thread and ~1.7-1.9x slower at 4 threads on dense workloads. The controlled
-data-parallel path `ekit-dp` (same chunking, same storage access, same component
-set) narrows the gap to ~1.1-1.13x at 4 threads. Both implementations produce
-bit-identical simulation state for the tested workload.
 ## Building & testing
 
 ```bash

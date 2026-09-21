@@ -45,6 +45,7 @@ dependency. These are workload-specific results, not whole-engine frame rates.
 
 | Report | Versions / scope |
 | --- | --- |
+| [Current Boids retest](boids_retest.md) | `055e1c9`; scheduler + data-parallel, 1/2/3/4/24 threads |
 | [Paged storage and creation](random_create.md) | `43e18e1` → `4d2d014`; local optimization, not a new EnTT comparison |
 | [Archived EnTT comparison](ecs_comparison.md) | ekit `3fcda56`, adapter `01f923f`, EnTT 3.15.0; supplied retest |
 | [Sparse query coverage](sparse_query.md) | `c212e60` → `3e0daa8`; local microbenchmark |
@@ -54,6 +55,25 @@ dependency. These are workload-specific results, not whole-engine frame rates.
 
 The reports retain their own raw-data links and methods. The supplied latest
 retest has no per-round raw output checked into this repository yet.
+
+## Current Boids retest
+
+Current `055e1c9` Boids (core optimization `4d2d014`) was rerun on 2026-09-21: i7-14650HX, Windows x64, MSVC Release, 800×600, seed 20260810, 20 warmup + 120 timed steps, five-round medians after discarding the first of six rounds. Primary charts cover 1/2/3/4 threads; 24 threads is listed separately. Three threads was a supplemental run.
+
+10,000 boids, milliseconds per step; lower is better:
+
+| Path | 1 thread | 2 threads | 3 threads | 4 threads | 24 threads |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| System scheduler | 102.12 | 59.69 | 67.71 | 40.35 | 40.31 |
+| Data-parallel queries + grid | 100.90 | 51.02 | 57.97 | 25.63 | 8.49 |
+
+![Boids cost](chart_boids_current_cost.en.png)
+
+![Boids speedup](chart_boids_current_speedup.en.png)
+
+Speedups use each path's own single-thread median; interpret the two paths separately. Boids uses dense components, so sparse paging gains do not directly transfer. Position checksum checks passed for all tested parallel configurations; timings exclude creation and rendering. Neither EnTT nor the old revision was rerun, so cross-date changes do not establish version speedups.
+
+[Full report, raw data and reproduction](boids_retest.md).
 
 ## Historical Boids benchmark
 

@@ -23,6 +23,27 @@ plus a spatial hash grid for neighbor queries.
 
 ![boids](boids.gif)
 
+## Current Boids retest
+
+Current `055e1c9` Boids (core optimization `4d2d014`) was rerun on 2026-09-21: i7-14650HX, Windows x64, MSVC Release, 800×600, seed 20260810, 20 warmup + 120 timed steps, five-round medians after discarding the first of six rounds. Primary charts cover 1/2/3/4 threads; 24 threads is listed separately. Three threads was a supplemental run.
+
+10,000 boids, milliseconds per step; lower is better:
+
+| Path | 1 thread | 2 threads | 3 threads | 4 threads | 24 threads |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| System scheduler | 102.12 | 59.69 | 67.71 | 40.35 | 40.31 |
+| Data-parallel queries + grid | 100.90 | 51.02 | 57.97 | 25.63 | 8.49 |
+
+![Boids cost](../../benchmarks/chart_boids_current_cost.en.png)
+
+![Boids speedup](../../benchmarks/chart_boids_current_speedup.en.png)
+
+Speedups use each path's own single-thread median; interpret the two paths separately. Boids uses dense components, so sparse paging gains do not directly transfer. Position checksum checks passed for all tested parallel configurations; timings exclude creation and rendering. Neither EnTT nor the old revision was rerun, so cross-date changes do not establish version speedups.
+
+[Full report, raw data and reproduction](../../benchmarks/boids_retest.md).
+
+The GIFs and embedded FPS below remain historical recordings; this run measures headless simulation and does not rerender animations.
+
 ## 10,000-boid recordings (no GLFW needed)
 
 The animated GIFs below are rendered by the **headless** mode (`ekit_boids`) -

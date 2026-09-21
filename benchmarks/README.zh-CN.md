@@ -38,6 +38,7 @@ Intel Core i7-14650HX、Windows x64、MSVC Release，单线程运行六轮，舍
 
 | 报告 | 版本与范围 |
 | --- | --- |
+| [当前 Boids 重测](boids_retest.zh-CN.md) | `055e1c9`; scheduler + data-parallel, 1/2/3/4/24 threads |
 | [分页存储与创建](random_create.zh-CN.md) | `43e18e1` → `4d2d014`；本地优化，不是新一轮 EnTT 对比 |
 | [已归档 EnTT 对比](ecs_comparison.zh-CN.md) | ekit `3fcda56`、适配层 `01f923f`、EnTT 3.15.0；提供的重测报告 |
 | [稀疏查询覆盖率](sparse_query.zh-CN.md) | `c212e60` → `3e0daa8`；本地微基准 |
@@ -46,6 +47,25 @@ Intel Core i7-14650HX、Windows x64、MSVC Release，单线程运行六轮，舍
 | 下方历史 Boids 数据 | `227ea33`；独立模拟与并行配置 |
 
 各报告保留各自的原始数据链接和测试方法。最新重测的逐轮原始输出尚未收录到本仓库。
+
+## 当前 Boids 重测
+
+2026-09-21 已重跑当前 `055e1c9`（核心优化 `4d2d014`）的 Boids。i7-14650HX、Windows x64、MSVC Release，800×600、种子 20260810，20 步预热 + 120 步计时，六轮舍弃首轮，取五轮中位数。主图为 1/2/3/4 线程，24 线程另列；3 线程为单独补跑。
+
+10,000 boids，每步毫秒，越低越好：
+
+| 路径 | 1 线程 | 2 线程 | 3 线程 | 4 线程 | 24 线程 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 系统调度器 | 102.12 | 59.69 | 67.71 | 40.35 | 40.31 |
+| 查询数据并行 + 网格 | 100.90 | 51.02 | 57.97 | 25.63 | 8.49 |
+
+![Boids cost](chart_boids_current_cost.zh.png)
+
+![Boids speedup](chart_boids_current_speedup.zh.png)
+
+加速比相对各路径自身单线程；两条路径的扩展表现应分别判断。Boids 使用密集组件，不能直接套用稀疏分页收益。所有已运行并行配置的位置校验和检查通过；计时不包含创建或渲染。本轮没有重跑 EnTT 或旧版，不能将跨日期变化视为版本提速。
+
+[完整报告、原始数据与复现方法](boids_retest.zh-CN.md).
 
 ## 历史 Boids 测试
 

@@ -1,0 +1,45 @@
+=== ekit Boids: original scheduler vs data-parallel ===
+world 800x600 | seed 20260810 | 120 timed steps (+20 warmup) | hw threads = 24
+
+boids = 200
+mode      threads   ms/step     speedup    k boids/s determin  
+-----     -------   --------    -------    --------- --------  
+orig      1         0.1390      1.00       1439.3    -         
+orig      24        0.0785      1.77       2548.0    ok        
+parallel  3         0.1257      1.11       1591.1    ok        
+
+boids = 500
+mode      threads   ms/step     speedup    k boids/s determin  
+-----     -------   --------    -------    --------- --------  
+orig      1         0.7497      1.00       666.9     -         
+orig      24        0.3379      2.22       1479.8    ok        
+parallel  3         0.3885      1.93       1287.0    ok        
+
+boids = 1000
+mode      threads   ms/step     speedup    k boids/s determin  
+-----     -------   --------    -------    --------- --------  
+orig      1         2.3654      1.00       422.8     -         
+orig      24        1.0484      2.26       953.8     ok        
+parallel  3         1.0082      2.35       991.8     ok        
+
+boids = 2000
+mode      threads   ms/step     speedup    k boids/s determin  
+-----     -------   --------    -------    --------- --------  
+orig      1         7.5919      1.00       263.4     -         
+orig      24        3.1725      2.39       630.4     ok        
+parallel  3         2.8259      2.69       707.7     ok        
+
+boids = 5000
+mode      threads   ms/step     speedup    k boids/s determin  
+-----     -------   --------    -------    --------- --------  
+orig      1         30.2164     1.00       165.5     -         
+orig      24        12.4717     2.42       400.9     ok        
+parallel  3         10.5492     2.86       474.0     ok        
+
+boids = 10000
+mode      threads   ms/step     speedup    k boids/s determin  
+-----     -------   --------    -------    --------- --------  
+orig      1         99.3003     1.00       100.7     -         
+orig      24        40.3256     2.46       248.0     ok        
+parallel  3         35.3349     2.81       283.0     ok        
+

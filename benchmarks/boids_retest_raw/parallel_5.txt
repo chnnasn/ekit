@@ -1,0 +1,63 @@
+=== ekit Boids: original scheduler vs data-parallel ===
+world 800x600 | seed 20260810 | 120 timed steps (+20 warmup) | hw threads = 24
+
+boids = 200
+mode      threads   ms/step     speedup    k boids/s determin  
+-----     -------   --------    -------    --------- --------  
+orig      1         0.1446      1.00       1383.0    -         
+orig      24        0.0838      1.73       2387.0    ok        
+parallel  1         0.1456      0.99       1373.3    ok        
+parallel  2         0.2210      0.65       904.8     ok        
+parallel  4         0.1448      1.00       1381.2    ok        
+parallel  24        0.1699      0.85       1177.3    ok        
+
+boids = 500
+mode      threads   ms/step     speedup    k boids/s determin  
+-----     -------   --------    -------    --------- --------  
+orig      1         0.7684      1.00       650.7     -         
+orig      24        0.3398      2.26       1471.6    ok        
+parallel  1         0.7483      1.03       668.2     ok        
+parallel  2         0.4925      1.56       1015.3    ok        
+parallel  4         0.3448      2.23       1450.0    ok        
+parallel  24        0.7663      1.00       652.5     ok        
+
+boids = 1000
+mode      threads   ms/step     speedup    k boids/s determin  
+-----     -------   --------    -------    --------- --------  
+orig      1         2.3563      1.00       424.4     -         
+orig      24        1.0515      2.24       951.1     ok        
+parallel  1         2.3903      0.99       418.4     ok        
+parallel  2         1.4181      1.66       705.2     ok        
+parallel  4         0.7936      2.97       1260.1    ok        
+parallel  24        2.3564      1.00       424.4     ok        
+
+boids = 2000
+mode      threads   ms/step     speedup    k boids/s determin  
+-----     -------   --------    -------    --------- --------  
+orig      1         7.7449      1.00       258.2     -         
+orig      24        3.2186      2.41       621.4     ok        
+parallel  1         7.7143      1.00       259.3     ok        
+parallel  2         4.0945      1.89       488.5     ok        
+parallel  4         2.2189      3.49       901.4     ok        
+parallel  24        1.2728      6.08       1571.3    ok        
+
+boids = 5000
+mode      threads   ms/step     speedup    k boids/s determin  
+-----     -------   --------    -------    --------- --------  
+orig      1         31.0255     1.00       161.2     -         
+orig      24        12.5274     2.48       399.1     ok        
+parallel  1         30.9297     1.00       161.7     ok        
+parallel  2         15.8150     1.96       316.2     ok        
+parallel  4         8.2029      3.78       609.5     ok        
+parallel  24        3.1192      9.95       1603.0    ok        
+
+boids = 10000
+mode      threads   ms/step     speedup    k boids/s determin  
+-----     -------   --------    -------    --------- --------  
+orig      1         107.5044    1.00       93.0      -         
+orig      24        41.2852     2.60       242.2     ok        
+parallel  1         101.1506    1.06       98.9      ok        
+parallel  2         51.0233     2.11       196.0     ok        
+parallel  4         25.6069     4.20       390.5     ok        
+parallel  24        8.1913      13.12      1220.8    ok        
+

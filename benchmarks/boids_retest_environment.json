@@ -1,0 +1,45 @@
+{
+  "revision": "055e1c955e385839ffdbfef63d6926bb50ead677",
+  "date": "2026-09-21",
+  "cpu": "Intel Core i7-14650HX",
+  "os": "Windows 11 Pro 10.0.26200 x64",
+  "compiler": "MSVC 19.50.35724.0 Release /O2",
+  "affinity": "all 24 logical CPUs (mask 0xFFFFFF), OS scheduling",
+  "rounds": 6,
+  "discard_round": 0,
+  "steps": 120,
+  "warmup": 20,
+  "seed": 20260810,
+  "world": [
+    800,
+    600
+  ],
+  "boids": [
+    200,
+    500,
+    1000,
+    2000,
+    5000,
+    10000
+  ],
+  "primary_threads": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "extra_threads": [
+    24
+  ],
+  "note": "3-thread samples collected in a separate six-round supplement; original scheduler/parallel order alternates by round. No historical executable or EnTT run in this study.",
+  "source_sha256": {
+    "include/ekit/world.hpp": "dbb31ab8531187a3d2e6e5a14202163f24f30920712dd6f0778069aa1c9b850d",
+    "include/ekit/component.hpp": "fa8d53b3dc5e0d49593aabfbba2606d47ba3fd121fc2048bca7ea53adf3741b3",
+    "include/ekit/query.hpp": "e6613236804409bb61ef1c2d3292aec5ef6c0f0bd92777235430cc629be0c566",
+    "include/ekit/scheduler.hpp": "d6081d9ee418e24d5c6bae526e527933ae638e8b014304080e2b98beb8705262",
+    "include/ekit/parallel.hpp": "0e18698b975f4a9e812234b9995dd9a47e7cdd963824e577467d3063fe062a30",
+    "examples/boids/boids.hpp": "51ce86f49d334854d766fcb0cbb9dd967b158ce0f1cbeab4b4c299d9887720d7",
+    "examples/boids/bench.cpp": "2e73fbc3a98b8fe551f5e58e1fb655c4f791b90384c8a901d368c2957e9022a0",
+    "examples/boids/bench_parallel.cpp": "5f304946bd08f5e857d95dcecd008810da7a9d8a3335f48dcc7f11838c13aa3d"
+  }
+}

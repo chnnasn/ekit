@@ -1,0 +1,18 @@
+=== ekit Boids benchmark ===
+world 800x600 | seed 20260810 | 120 timed steps (+20 warmup) | hw threads = 24
+
+boids    threads   ms/step     steps/s    speedup   k boids/s   us/boid   
+------   -------   --------    -------    -------   ---------   --------  
+200      3         0.0760      13163.5    1.00      2632.7      0.380     
+
+500      3         0.3268      3060.0     1.00      1530.0      0.654     
+
+1000     3         1.0450      956.9      1.00      956.9       1.045     
+
+2000     3         3.1591      316.5      1.00      633.1       1.580     
+
+5000     3         12.4767     80.1       1.00      400.7       2.495     
+
+10000    3         40.5179     24.7       1.00      246.8       4.052     
+
+single-boid throughput (best): 2.633 boids/us (0.380 us/boid) at 200 boids, 3 threads
