@@ -209,7 +209,9 @@ public:
         }
 
         const auto generation = static_cast<EntityGeneration>(e.GetGeneration() + 1);
-        entities_[index] = Entity(index, generation);
+        // Keep the next generation for reuse, but clear the index in the stored
+        // handle so no handle for this slot can compare equal while it is dead.
+        entities_[index] = Entity(0, generation);
         alive_[index] = 0;
         if (generation != 0) {
             free_list_.push_back(index);
@@ -218,7 +220,7 @@ public:
     }
 
     bool IsAlive(Entity e) const {
-        return e.IsValid() && e.GetIndex() < entities_.size() && alive_[e.GetIndex()] != 0 &&
+        return e.IsValid() && e.GetIndex() < entities_.size() &&
                entities_[e.GetIndex()] == e;
     }
 
@@ -735,7 +737,10 @@ private:
     }
 
     std::size_t EmptyArchetypeId() {
-        return GetOrCreateArchetype({});
+        if (empty_archetype_id_ == detail::kNpos) {
+            empty_archetype_id_ = GetOrCreateArchetype({});
+        }
+        return empty_archetype_id_;
     }
 
     std::size_t GetOrCreateArchetype(const std::vector<ComponentTypeId>& types) {
@@ -820,6 +825,7 @@ private:
     std::size_t storage_version_ = 0;
 
     std::vector<std::unique_ptr<Archetype>> archetypes_;
+    std::size_t empty_archetype_id_ = detail::kNpos;
     std::map<std::vector<ComponentTypeId>, std::size_t> archetype_index_;
     std::vector<std::unique_ptr<IComponentStorage>> sparse_storages_;
 

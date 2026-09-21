@@ -5,6 +5,7 @@
 #include <iostream>
 #include <numeric>
 #include <random>
+#include <string>
 #include <vector>
 
 struct Position { std::uint64_t value = 0; EKIT_COMPONENT(Position); };
@@ -18,7 +19,10 @@ double Time(F&& fn) {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
 }
 
-int main() {
+int main(int argc, char** argv) {
+    const int first_run = argc > 1 ? std::stoi(argv[1]) : 0;
+    const int end_run = argc > 1 ? first_run + 1 : 6;
+    if (first_run < 0 || first_run > 5) return 1;
     constexpr std::size_t total = 100000;
     std::vector<std::size_t> order(total);
     std::iota(order.begin(), order.end(), 0);
@@ -26,8 +30,9 @@ int main() {
     std::shuffle(order.begin(), order.end(), random);
     std::cout << "run,storage,operation,ms,checksum\n";
     // Run 0 is warmup. Report medians of runs 1 through 5 externally.
-    for (int run = 0; run < 6; ++run) {
+    for (int run = first_run; run < end_run; ++run) {
         for (bool sparse : {true, false}) {
+            if (argc > 2 && (std::string(argv[2]) == "sparse") != sparse) continue;
             ekit::World world;
             if (sparse) {
                 world.RegisterSparseComponent<Position>();

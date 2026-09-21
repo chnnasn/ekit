@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Random-access and creation breakdown benchmark, including reservation cost and
+  pool-level reads, with owning-component/page-boundary regression coverage.
+
+### Changed
+
+- Sparse components now use allocator-backed fixed pages instead of `std::deque`.
+  Growth preserves references, reserve allocates uninitialized pages, and removal
+  destroys components while retaining capacity until clear/destruction.
+- Entity validity compares the complete stored handle without an additional alive
+  array lookup; dead slots retain their next generation with a zero index marker.
+- Entity creation caches the empty archetype ID.
+
+### Previously added
+
 - **Data-parallel query** - `ekit::ThreadPool` and `Query::ForEachParallel(pool, fn)` split the
   smallest storage into chunks and run them concurrently with dynamic atomic work stealing.
 - **Parallel spatial grid** - the Boids `SpatialGrid` now has a `BuildParallel` path (count ->

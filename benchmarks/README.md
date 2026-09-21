@@ -21,6 +21,7 @@ dependency. These are workload-specific results, not whole-engine frame rates.
 
 | Report | Versions / scope |
 | --- | --- |
+| [Paged storage and creation](random_create.md) | Post-`43e18e1` local optimization; not a new EnTT comparison |
 | [Latest EnTT comparison](ecs_comparison.md) | ekit `3fcda56`, adapter `01f923f`, EnTT 3.15.0; supplied retest |
 | [Sparse query coverage](sparse_query.md) | `c212e60` → `3e0daa8`; local microbenchmark |
 | [Specialized access paths](access_paths.md) | `3e0daa8` → `3fcda56`; local microbenchmark |

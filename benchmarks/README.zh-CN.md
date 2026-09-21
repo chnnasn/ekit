@@ -18,6 +18,7 @@ Intel Core i7-14650HX、Windows x64、MSVC Release，单线程运行六轮，舍
 
 | 报告 | 版本与范围 |
 | --- | --- |
+| [分页存储与创建](random_create.zh-CN.md) | `43e18e1` 之后的本地优化；不是新一轮 EnTT 对比 |
 | [最新 EnTT 对比](ecs_comparison.zh-CN.md) | ekit `3fcda56`、适配层 `01f923f`、EnTT 3.15.0；提供的重测报告 |
 | [稀疏查询覆盖率](sparse_query.zh-CN.md) | `c212e60` → `3e0daa8`；本地微基准 |
 | [专用查询与访问路径](access_paths.zh-CN.md) | `3e0daa8` → `3fcda56`；本地微基准 |

@@ -420,11 +420,20 @@ moving.ForEach([](Position& p, Velocity& v) { /* update */ });
 ```
 
 `ReserveEntities` reserves total entity capacity and the empty archetype.
-`ReserveSparseComponent<T>` reserves the pool's entity and sparse-index arrays;
-the reference-stable component deque still allocates pages as needed. Call
+`ReserveSparseComponent<T>` reserves the pool's entity and sparse-index arrays
+and allocates uninitialized component pages without constructing components. Call
 `ReserveEntities` first to size the sparse index reservation for the entity range.
 `ReserveArchetype<Ts...>(capacity)` reserves one exact dense signature; reserve
 intermediate signatures as well when using successive `Add` calls.
+
+Sparse components use fixed pages with a power-of-two element count targeting
+4 KiB (one element per page for larger types). Appending and reserving never move
+live components. Removing components destroys them immediately but retains page
+capacity for reuse; `ClearComponent`, `ClearAll`, or storage destruction releases
+the component pages. This trades retained peak capacity and per-pool page slack
+for fewer allocations during churn. See the [random-access/creation study](benchmarks/random_create.md)
+for the implementation, measurements and safety checks; earlier EnTT results
+above remain tied to their stated versions.
 
 Queries with required sparse components (including `With`) start from the smallest
 required sparse pool. `Optional` and `Without` never select the driving pool.

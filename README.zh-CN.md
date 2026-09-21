@@ -331,3 +331,27 @@ examples/
 ## 许可证
 
 [MIT](LICENSE) © 2026 chnnasn
+
+## 稀疏存储与批量创建容量
+
+资源组件和频繁增删的组件继续使用 `RegisterSparseComponent<T>()`。当前实现按 2 的幂次元素数量分页，
+每页目标大小为 4 KiB；大于该大小的类型每页放一个元素。追加和预留容量不会移动已有组件。
+删除会立即执行析构，但保留页面容量供复用；交换删除仍可能使被删除组件和被移入的池尾组件引用失效。
+`ClearComponent`、`ClearAll` 或存储析构会释放组件页。
+这是以峰值容量保留及每池末页空余空间，换取更少的反复分配。
+
+```cpp
+world.RegisterSparseComponent<Position>();
+world.RegisterSparseComponent<Velocity>();
+world.ReserveEntities(100000);
+world.ReserveSparseComponent<Position>(100000);
+world.ReserveSparseComponent<Velocity>(100000);
+```
+
+`ReserveEntities` 预留实体索引与空 archetype 的容量；`ReserveSparseComponent<T>` 预留组件池的
+实体和稀疏索引数组，并分配尚未构造组件的页面。先预留实体容量，才能为稀疏索引预留相应范围。
+`ReserveArchetype<Ts...>` 为一个精确的密集组件组合预留容量，连续 Add 时也要考虑中间组合。
+密集存储仍要求平凡可复制类型；迁移 Transform 等组件前需要审计外部引用，不能统一迁移。
+
+详见[随机访问与创建优化记录](benchmarks/random_create.zh-CN.md)。上方历史 EnTT 对比仍对应其标明的版本，
+不会因本轮优化而自动更新。

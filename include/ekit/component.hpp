@@ -15,9 +15,10 @@
 #include "entity.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cstddef>
 #include <cstring>
-#include <deque>
+#include <memory>
 #include <typeindex>
 #include <vector>
 
@@ -226,6 +227,85 @@ public:
     virtual const char* GetTypeName() const = 0;
 };
 
+namespace detail {
+
+// Power-of-two pages make indexing cheap without relocating live components.
+// Storage is allocated separately from object lifetime: Reserve never constructs T.
+template<typename T>
+class PagedComponents {
+    static constexpr std::size_t PageSize = std::bit_floor((std::max)(std::size_t{1}, std::size_t{4096} / sizeof(T)));
+    struct PageDeleter {
+        void operator()(T* page) const noexcept { std::allocator<T>{}.deallocate(page, PageSize); }
+    };
+    using Page = std::unique_ptr<T, PageDeleter>;
+
+public:
+    PagedComponents() = default;
+    ~PagedComponents() { Clear(); }
+    PagedComponents(const PagedComponents& other) requires std::is_copy_constructible_v<T> {
+        try {
+            Reserve(other.Size());
+            for (std::size_t i = 0; i < other.Size(); ++i) EmplaceBack(other.At(i));
+        } catch (...) {
+            Clear();
+            throw;
+        }
+    }
+    PagedComponents& operator=(const PagedComponents& other) requires std::is_copy_constructible_v<T> {
+        PagedComponents copy(other);
+        Swap(copy);
+        return *this;
+    }
+    PagedComponents(PagedComponents&& other) noexcept { Swap(other); }
+    PagedComponents& operator=(PagedComponents&& other) noexcept {
+        if (this != &other) {
+            Clear();
+            Swap(other);
+        }
+        return *this;
+    }
+
+    std::size_t Size() const { return size_; }
+    T& At(std::size_t index) { return pages_[index / PageSize].get()[index % PageSize]; }
+    const T& At(std::size_t index) const { return pages_[index / PageSize].get()[index % PageSize]; }
+
+    void Reserve(std::size_t capacity) {
+        const auto count = capacity / PageSize + (capacity % PageSize != 0);
+        pages_.reserve(count);
+        while (pages_.size() < count) AddPage();
+    }
+    template<typename... Args>
+    T& EmplaceBack(Args&&... args) {
+        if (size_ / PageSize == pages_.size()) AddPage();
+        T* slot = pages_[size_ / PageSize].get() + size_ % PageSize;
+        std::construct_at(slot, std::forward<Args>(args)...);
+        ++size_;
+        return *slot;
+    }
+    void PopBack() {
+        --size_;
+        std::destroy_at(&At(size_));
+    }
+    void Clear() noexcept {
+        while (size_ != 0) PopBack();
+        pages_.clear();
+    }
+
+private:
+    void AddPage() {
+        Page page(std::allocator<T>{}.allocate(PageSize));
+        pages_.push_back(std::move(page));
+    }
+    void Swap(PagedComponents& other) noexcept {
+        pages_.swap(other.pages_);
+        std::swap(size_, other.size_);
+    }
+    std::vector<Page> pages_;
+    std::size_t size_ = 0;
+};
+
+} // namespace detail
+
 // Sparse-set storage: paged components + entity array + sparse index. Appending
 // preserves component references. Removal invalidates the removed and moved-last
 // component references; Clear invalidates all references. Removal is
@@ -234,7 +314,7 @@ template<typename T>
 class ComponentStorage final : public IComponentStorage {
 public:
     std::size_t Size() const override {
-        return components_.size();
+        return components_.Size();
     }
 
     bool Contains(EntityId index) const {
@@ -245,14 +325,14 @@ public:
         if (!Contains(index)) {
             return nullptr;
         }
-        return &components_[static_cast<std::size_t>(sparse_[index]) - 1];
+        return &components_.At(static_cast<std::size_t>(sparse_[index]) - 1);
     }
 
     const T* TryGet(EntityId index) const {
         if (!Contains(index)) {
             return nullptr;
         }
-        return &components_[static_cast<std::size_t>(sparse_[index]) - 1];
+        return &components_.At(static_cast<std::size_t>(sparse_[index]) - 1);
     }
 
     T& Get(EntityId index) {
@@ -277,16 +357,16 @@ public:
         if (sparse_[index] != 0) {
             throw EkitException("ekit: sparse component already present on this entity.");
         }
-        const std::size_t dense_index = components_.size();
-        components_.emplace_back(std::forward<Args>(args)...);
+        const std::size_t dense_index = components_.Size();
+        components_.EmplaceBack(std::forward<Args>(args)...);
         try {
             entities_.push_back(index);
         } catch (...) {
-            components_.pop_back();
+            components_.PopBack();
             throw;
         }
         sparse_[index] = static_cast<std::uint32_t>(dense_index) + 1;
-        return components_.back();
+        return components_.At(dense_index);
     }
 
     bool TryRemove(EntityId index) override {
@@ -294,20 +374,20 @@ public:
             return false;
         }
         const std::size_t dense_index = static_cast<std::size_t>(sparse_[index]) - 1;
-        const std::size_t last = components_.size() - 1;
+        const std::size_t last = components_.Size() - 1;
         if (dense_index != last) {
-            components_[dense_index] = std::move(components_[last]);
+            components_.At(dense_index) = std::move(components_.At(last));
             entities_[dense_index] = entities_[last];
             sparse_[entities_[dense_index]] = static_cast<std::uint32_t>(dense_index) + 1;
         }
-        components_.pop_back();
+        components_.PopBack();
         entities_.pop_back();
         sparse_[index] = 0;
         return true;
     }
 
     void Clear() override {
-        components_.clear();
+        components_.Clear();
         entities_.clear();
         std::fill(sparse_.begin(), sparse_.end(), 0);
     }
@@ -318,18 +398,19 @@ public:
 
     const std::vector<EntityId>& Entities() const override { return entities_; }
 
-    // Reserve indices without relocating the reference-stable deque elements.
+    // Reserve index arrays and uninitialized component pages without moving T.
     void Reserve(std::size_t capacity, std::size_t entity_capacity) {
         entities_.reserve(capacity);
         sparse_.reserve(entity_capacity);
+        components_.Reserve(capacity);
     }
 
     T& ComponentAt(std::size_t dense_index) {
-        return components_[dense_index];
+        return components_.At(dense_index);
     }
 
     const T& ComponentAt(std::size_t dense_index) const {
-        return components_[dense_index];
+        return components_.At(dense_index);
     }
 
     std::type_index GetTypeIndex() const override {
@@ -347,7 +428,7 @@ private:
         }
     }
 
-    std::deque<T> components_;
+    detail::PagedComponents<T> components_;
     std::vector<EntityId> entities_;
     std::vector<std::uint32_t> sparse_;
 };
