@@ -189,10 +189,32 @@ powershell -ExecutionPolicy Bypass -File examples/boids/render.ps1 -Fps 30   # -
 
 ## 基准测试
 
-[最新基准报告](benchmarks/ecs_comparison.zh-CN.md)收录下述原生 ECS 与 SceneWorld 结果；
-[基准索引](benchmarks/README.zh-CN.md)区分本轮 EnTT 对照、历史版本间微基准及 Boids 测试。
+**根据用户提供的最新重测结论，ekit 在本轮遍历测试中已追平或超过 EnTT，主要优化重点转向随机访问和实体创建**，
+同时保持稀疏组件增删、实体销毁的优势，以及引用有效性、生命周期与查询语义。
+该轮重测的确切版本与逐轮数据尚未归档到本仓库；下方带版本的 EnTT 表格仍保留此前对照结果。
 
-### ekit 与 EnTT：原生 ECS 与引擎接入
+### 当前优化：`4d2d014`
+
+[分页存储报告](benchmarks/random_create.zh-CN.md)对照 `43e18e1` 与提交为 `4d2d014` 的实现：
+10 万实体、Windows x64、MSVC Release，固定逻辑 CPU 0，六轮舍弃首轮，取其余五轮中位数。
+稀疏与密集场景使用独立进程，并交替新旧版本运行顺序。
+
+| 稀疏操作 | 优化前（ms） | 优化后（ms） | 耗时减少 |
+| --- | ---: | ---: | ---: |
+| 创建实体并添加两个组件 | 10.80 | 7.25 | 33% |
+| 遍历更新 200 次 | 56.44 | 37.22 | 34% |
+| 随机读取 10 轮 | 24.55 | 10.72 | 56% |
+| 组件添加、移除 10 轮 | 15.81 | 10.98 | 31% |
+| 销毁全部实体 | 2.59 | 1.49 | 43% |
+
+这是 ekit 新旧版本对照，不是新的 EnTT 耗时比。稀疏分页存储在追加和预留容量时保持引用有效，
+删除后保留页面供复用；交换删除仍可能使引用失效。密集销毁本轮慢约 0.39 ms，完整报告保留了这一结果。
+继续按组件用途选择存储，迁移 Transform 等组件前先审计外部引用。
+
+[此前基准报告](benchmarks/ecs_comparison.zh-CN.md)收录下述原生 ECS 与 SceneWorld 结果；
+[基准索引](benchmarks/README.zh-CN.md)提供原始数据、复现脚本，并区分各版本对照与历史 Boids 测试。
+
+### 此前 ekit 与 EnTT 对比：原生 ECS 与引擎接入
 
 测试版本为 **ekit `3fcda56`**，引擎适配层为 **`dev_ekit` 分支的 `01f923f`**；对照库为 TomCat `main` 分支使用的 **EnTT 3.15.0**。
 测试环境与接入代码见 [TomCat_Engine / dev_ekit](https://github.com/chnnasn/TomCat_Engine/tree/dev_ekit)。

@@ -217,11 +217,39 @@ See [examples/boids/README.md](examples/boids/README.md) for details.
 
 ## Benchmarks
 
-The [latest benchmark report](benchmarks/ecs_comparison.md) records the native ECS
-and SceneWorld results below. The [benchmark index](benchmarks/README.md) separates
-this EnTT comparison from earlier version-to-version and Boids measurements.
+**According to the latest user-reported retest, ekit matched or exceeded EnTT in
+the tested traversal workloads. Random access and entity creation remain the
+main optimization priorities**, while preserving sparse component churn and
+entity destruction performance, reference validity, lifetimes and query semantics.
+That retest's exact revisions and per-round measurements have not yet been
+archived here; the versioned tables below remain the earlier comparison.
 
-### ekit vs EnTT: native ECS and engine integration
+### Current optimization: `4d2d014`
+
+The [paged storage report](benchmarks/random_create.md) compares `43e18e1` with
+the implementation committed as `4d2d014`: 100,000 entities, Windows x64, MSVC
+Release, logical CPU 0, six rounds with the first discarded and five-round medians.
+Sparse and dense workloads run in separate processes, alternating version order.
+
+| Sparse operation | Before (ms) | After (ms) | Time reduction |
+| --- | ---: | ---: | ---: |
+| Create entities and add two components | 10.80 | 7.25 | 33% |
+| Traversal/update, 200 passes | 56.44 | 37.22 | 34% |
+| Random reads, 10 passes | 24.55 | 10.72 | 56% |
+| Component add/remove, 10 rounds | 15.81 | 10.98 | 31% |
+| Destroy all entities | 2.59 | 1.49 | 43% |
+
+These are ekit version-to-version measurements, not new EnTT ratios. Paged sparse
+storage preserves references on append/reserve and retains pages after removal
+for reuse; swap-and-pop removal can still invalidate references. Dense destruction
+took about 0.39 ms longer in this run, as recorded in the full report. Storage
+selection remains component-specific; audit retained references before migrating
+Transform or other components to dense storage.
+
+The [benchmark index](benchmarks/README.md) links the raw data, reproduction
+script, earlier EnTT comparison and historical Boids measurements.
+
+### Earlier ekit vs EnTT comparison: native ECS and engine integration
 
 The native ECS test uses **ekit `3fcda56`**; the engine adapter is **`01f923f` on
 `dev_ekit`**. The comparison uses **EnTT 3.15.0**, as used by TomCat's `main` branch.

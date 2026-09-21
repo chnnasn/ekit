@@ -2,7 +2,27 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-## 最新 ECS 对比
+## 当前性能进展
+
+根据用户提供的最新重测结论，ekit 在本轮遍历测试中已追平或超过 EnTT，主要优化重点转向随机访问和创建。
+该轮重测的确切版本与逐轮数据尚未归档到本仓库。
+
+可复现的[分页存储报告](random_create.zh-CN.md)覆盖 `43e18e1` → `4d2d014`，是同条件下的 ekit 新旧对照：
+
+| 稀疏操作 | 优化前 → 后（ms） | 耗时减少 |
+| --- | ---: | ---: |
+| 创建并添加两个组件 | 10.80 → 7.25 | 33% |
+| 遍历 200 次 | 56.44 → 37.22 | 34% |
+| 随机读取 10 轮 | 24.55 → 10.72 | 56% |
+| 增删 10 轮 | 15.81 → 10.98 | 31% |
+| 销毁全部实体 | 2.59 → 1.49 | 43% |
+
+10 万实体、Windows x64、MSVC Release，固定逻辑 CPU 0；六轮舍弃首轮，取五轮中位数。
+交替运行新旧版本，不同存储模式使用独立进程。报告附原始数据和复现脚本，不能将这些数值当作新的 EnTT 对比。
+页面会保留峰值容量直至清除或析构；密集销毁本轮慢约 0.39 ms。继续按组件用途选择存储，
+迁移 Transform 前审计引用，并保持引用有效性、生命周期和查询语义。
+
+## 此前 ECS 对比
 
 [完整报告](ecs_comparison.zh-CN.md)对比 ekit `3fcda56`、TomCat 适配层 `01f923f` 与 EnTT 3.15.0。
 测试环境：[TomCat_Engine / dev_ekit](https://github.com/chnnasn/TomCat_Engine/tree/dev_ekit)。
@@ -18,8 +38,8 @@ Intel Core i7-14650HX、Windows x64、MSVC Release，单线程运行六轮，舍
 
 | 报告 | 版本与范围 |
 | --- | --- |
-| [分页存储与创建](random_create.zh-CN.md) | `43e18e1` 之后的本地优化；不是新一轮 EnTT 对比 |
-| [最新 EnTT 对比](ecs_comparison.zh-CN.md) | ekit `3fcda56`、适配层 `01f923f`、EnTT 3.15.0；提供的重测报告 |
+| [分页存储与创建](random_create.zh-CN.md) | `43e18e1` → `4d2d014`；本地优化，不是新一轮 EnTT 对比 |
+| [已归档 EnTT 对比](ecs_comparison.zh-CN.md) | ekit `3fcda56`、适配层 `01f923f`、EnTT 3.15.0；提供的重测报告 |
 | [稀疏查询覆盖率](sparse_query.zh-CN.md) | `c212e60` → `3e0daa8`；本地微基准 |
 | [专用查询与访问路径](access_paths.zh-CN.md) | `3e0daa8` → `3fcda56`；本地微基准 |
 | [历史 TomCat 接入审计](tomcat_integration.zh-CN.md) | 适配层 `5a89e22`；新增 ForEach 前的 View/Get 对照 |

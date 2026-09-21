@@ -2,7 +2,16 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-For the latest ekit `3fcda56` / TomCat `01f923f` versus EnTT 3.15.0 results, see
+The latest user-reported retest places ekit at or ahead of EnTT in the tested
+traversal workloads; random access and creation are now the main priorities.
+Its exact revisions and per-round data have not yet been archived here. See the
+[benchmark index](../../benchmarks/README.md) for version and measurement details.
+The [local `4d2d014` optimization](../../benchmarks/random_create.md) reduced sparse
+random-read time by 56% and creation time by 33% versus `43e18e1`. These are ekit
+version comparisons, not new EnTT ratios or whole-engine frame-rate gains.
+Keep sparse churn advantages and audit retained references before choosing dense storage.
+
+For the earlier ekit `3fcda56` / TomCat `01f923f` versus EnTT 3.15.0 results, see
 the [ECS benchmark report](../../benchmarks/ecs_comparison.md). The Boids timings
 and recordings below are historical measurements of a different workload.
 

@@ -2,7 +2,13 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-最新 ekit `3fcda56` / TomCat `01f923f` 与 EnTT 3.15.0 的对比见
+根据用户提供的最新重测结论，ekit 在本轮遍历测试中已追平或超过 EnTT，主要优化重点转向随机访问和创建。
+该轮重测的确切版本与逐轮数据尚未归档，版本与测量范围见[基准索引](../../benchmarks/README.zh-CN.md)。
+[`4d2d014` 本地优化](../../benchmarks/random_create.zh-CN.md)相对 `43e18e1` 将稀疏随机读取耗时减少 56%、
+创建耗时减少 33%。这是 ekit 版本对照，不是新的 EnTT 耗时比，也不代表整个引擎帧率的提升。
+继续保持稀疏增删优势，选择密集存储前审计长期引用。
+
+此前 ekit `3fcda56` / TomCat `01f923f` 与 EnTT 3.15.0 的对比见
 [ECS 基准报告](../../benchmarks/ecs_comparison.zh-CN.md)。下方 Boids 耗时与录制属于不同工作负载的历史测量。
 
 这是一个基于 **ekit** 实现的 Craig Reynolds Boids 群集算法案例。它演示了**显式组件注册、流式查询、声明式 `Reads/Writes` 系统依赖和自动并行调度**，并使用空间哈希网格进行邻居查询。

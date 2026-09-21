@@ -2,7 +2,31 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-## Latest ECS comparison
+## Current performance status
+
+The latest user-reported retest places ekit at or ahead of EnTT in the tested
+traversal workloads; random access and creation remain the main priorities.
+Its exact revisions and per-round data have not yet been archived here.
+
+The reproducible [paged storage report](random_create.md) covers `43e18e1` →
+`4d2d014`, comparing ekit versions under the same conditions, not against EnTT:
+
+| Sparse operation | Before → after (ms) | Time reduction |
+| --- | ---: | ---: |
+| Create with two components | 10.80 → 7.25 | 33% |
+| Traversal, 200 passes | 56.44 → 37.22 | 34% |
+| Random reads, 10 passes | 24.55 → 10.72 | 56% |
+| Add/remove, 10 rounds | 15.81 → 10.98 | 31% |
+| Destroy all | 2.59 → 1.49 | 43% |
+
+100,000 entities, Windows x64, MSVC Release, logical CPU 0; six rounds, discard
+the first, report five-round medians. Versions alternate and storage modes run
+in separate processes. The report includes raw data and the reproduction script.
+Pages retain peak capacity until clear/destruction; dense destruction was about
+0.39 ms slower in this run. Keep storage choices component-specific and audit
+references before migrating Transform. Preserve reference, lifetime and query semantics.
+
+## Earlier ECS comparison
 
 The [full report](ecs_comparison.md) compares ekit `3fcda56` and TomCat adapter
 `01f923f` with EnTT 3.15.0. Test environment:
@@ -21,8 +45,8 @@ dependency. These are workload-specific results, not whole-engine frame rates.
 
 | Report | Versions / scope |
 | --- | --- |
-| [Paged storage and creation](random_create.md) | Post-`43e18e1` local optimization; not a new EnTT comparison |
-| [Latest EnTT comparison](ecs_comparison.md) | ekit `3fcda56`, adapter `01f923f`, EnTT 3.15.0; supplied retest |
+| [Paged storage and creation](random_create.md) | `43e18e1` → `4d2d014`; local optimization, not a new EnTT comparison |
+| [Archived EnTT comparison](ecs_comparison.md) | ekit `3fcda56`, adapter `01f923f`, EnTT 3.15.0; supplied retest |
 | [Sparse query coverage](sparse_query.md) | `c212e60` → `3e0daa8`; local microbenchmark |
 | [Specialized access paths](access_paths.md) | `3e0daa8` → `3fcda56`; local microbenchmark |
 | [Historical TomCat adapter audit](tomcat_integration.md) | Adapter `5a89e22`, before ForEach; View/Get comparison |
